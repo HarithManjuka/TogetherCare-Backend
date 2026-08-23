@@ -15,6 +15,7 @@ app.use(express.json());
 
 // Mount API Routers
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/companionship', require('./routes/companionshipRoutes'));
 
 // Health Check Route
 app.get('/api/health', (req, res) => {
