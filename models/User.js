@@ -94,6 +94,20 @@ const UserSchema = new mongoose.Schema(
       default: 'pending_verification',
     },
 
+    // Password reset fields
+    resetPasswordOtpHash: {
+      type: String,
+      select: false,
+    },
+    resetPasswordOtpExpires: {
+      type: Date,
+      select: false,
+    },
+    passwordResetSessionToken: {
+      type: String,
+      select: false,
+    },
+
     // Elderly specific
     emergencyContact: {
       name: { type: String, default: '' },
