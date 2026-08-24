@@ -8,6 +8,9 @@ const {
   uploadProfilePicture,
   deleteProfilePicture,
   updateUserProfile,
+  forgotPassword,
+  verifyResetOtp,
+  resetPassword,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
@@ -38,5 +41,10 @@ router.delete(
   protect,
   deleteProfilePicture
 );
+
+// Forgot Password Flow
+router.post('/forgot-password', forgotPassword);
+router.post('/verify-reset-otp', verifyResetOtp);
+router.post('/reset-password', resetPassword);
 
 module.exports = router;

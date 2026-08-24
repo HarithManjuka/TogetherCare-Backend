@@ -4,9 +4,12 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Review = require('../models/Review');
 const cloudinary = require('../config/cloudinary');
+const crypto = require('crypto');
+const { generateHumanReadableId } = require('../utils/customIdGenerator');
+const { sendPasswordResetOtpEmail } = require('../utils/emailService');
 
-const generateToken = (id, role) => {
-  return jwt.sign({ id, role }, process.env.JWT_SECRET, {
+const generateToken = (id, role, customId) => {
+  return jwt.sign({ id, role, customId }, process.env.JWT_SECRET, {
     expiresIn: '30d',
   });
 };
@@ -146,8 +149,11 @@ const registerUser = async (req, res) => {
       });
     }
 
+    const customId = await generateHumanReadableId(role);
+
     // 5. Create Record
     const user = await User.create({
+      customId,
       firstName,
       lastName,
       email: email.toLowerCase(),
@@ -177,7 +183,7 @@ const registerUser = async (req, res) => {
       organizationName: role === 'caregiver' ? organizationName : '',
     });
 
-    const token = generateToken(user._id, user.role);
+    const token = generateToken(user._id, user.role, user.customId);
 
     return res.status(201).json({
       success: true,
@@ -185,6 +191,7 @@ const registerUser = async (req, res) => {
       token,
       user: {
         _id: user._id,
+        customId: user.customId,
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,
@@ -229,7 +236,7 @@ const loginUser = async (req, res) => {
       });
     }
 
-    const token = generateToken(user._id, user.role);
+    const token = generateToken(user._id, user.role, user.customId);
 
     return res.status(200).json({
       success: true,
@@ -237,6 +244,7 @@ const loginUser = async (req, res) => {
       token,
       user: {
         _id: user._id,
+        customId: user.customId,
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,
@@ -546,6 +554,137 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
+// @desc    Request Password Reset OTP
+// @route   POST /api/auth/forgot-password
+// @access  Public
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Please provide your email address' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: 'If an account with this email exists, a verification code has been dispatched.',
+      });
+    }
+
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    user.resetPasswordOtpHash = crypto.createHash('sha256').update(otp).digest('hex');
+    user.resetPasswordOtpExpires = Date.now() + 10 * 60 * 1000;
+    user.passwordResetSessionToken = undefined;
+    await user.save();
+
+    try {
+      await sendPasswordResetOtpEmail(user.email, user.firstName, otp);
+      return res.status(200).json({
+        success: true,
+        message: 'Verification code sent to your email',
+      });
+    } catch (emailError) {
+      console.error('Forgot Password Email Dispatch Error:', emailError.message || emailError);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`\n======================================================`);
+        console.log(`🔑 [DEV MODE OTP FALLBACK]`);
+        console.log(`Target Email : ${user.email}`);
+        console.log(`Reset OTP    : ${otp}`);
+        console.log(`Note         : SMTP delivery failed (${emailError.code || 'EAUTH'}). OTP logged here for local testing.`);
+        console.log(`======================================================\n`);
+
+        return res.status(200).json({
+          success: true,
+          message: 'Verification code generated (Check server console in development mode).',
+        });
+      }
+
+      return res.status(500).json({ success: false, message: 'Failed to send verification email' });
+    }
+  } catch (error) {
+    console.error('Forgot Password Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error processing password reset request' });
+  }
+};
+
+// @desc    Verify 4-Digit Reset OTP
+// @route   POST /api/auth/verify-reset-otp
+// @access  Public
+const verifyResetOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ success: false, message: 'Email and 4-digit code are required' });
+    }
+
+    const hashedOtp = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      resetPasswordOtpHash: hashedOtp,
+      resetPasswordOtpExpires: { $gt: Date.now() },
+    }).select('+resetPasswordOtpHash +resetPasswordOtpExpires');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
+    }
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    user.passwordResetSessionToken = sessionToken;
+    user.resetPasswordOtpHash = undefined;
+    user.resetPasswordOtpExpires = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Code verified successfully',
+      sessionToken,
+    });
+  } catch (error) {
+    console.error('Verify OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Error verifying code' });
+  }
+};
+
+// @desc    Update Password with Valid Session Token
+// @route   POST /api/auth/reset-password
+// @access  Public
+const resetPassword = async (req, res) => {
+  try {
+    const { email, sessionToken, newPassword } = req.body;
+
+    if (!email || !sessionToken || !newPassword) {
+      return res.status(400).json({ success: false, message: 'All fields are required' });
+    }
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
+    }
+
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      passwordResetSessionToken: sessionToken,
+    }).select('+passwordResetSessionToken');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired reset session. Please request a new code.' });
+    }
+
+    user.password = newPassword;
+    user.passwordResetSessionToken = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password updated successfully',
+    });
+  } catch (error) {
+    console.error('Reset Password Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to reset password' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -553,4 +692,7 @@ module.exports = {
   uploadProfilePicture,
   deleteProfilePicture,
   updateUserProfile,
+  forgotPassword,
+  verifyResetOtp,
+  resetPassword,
 };
