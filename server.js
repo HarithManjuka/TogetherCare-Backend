@@ -20,6 +20,8 @@ app.use('/api/companionship', require('./routes/companionshipRoutes'));
 app.use('/api/reviews', require('./routes/reviewRoutes'));
 app.use('/api/interests', require('./routes/interestRoutes'));
 app.use('/api/volunteer-offers', require('./routes/volunteerOfferRoutes'));
+app.use('/api/caregiver/dependents', require('./routes/dependentsRoutes'));
+app.use('/api/help-requests', require('./routes/helpRequestRoutes'));
 
 // Health Check Route
 app.get('/api/health', (req, res) => {
