@@ -10,10 +10,10 @@ const getUpcomingVisits = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // Find upcoming requests for the current user from database
+    // Find accepted upcoming visits for the current user from database
     const visits = await CompanionshipRequest.find({
       elderly: userId,
-      status: { $in: ['accepted', 'pending', 'scheduled'] },
+      status: 'accepted',
     })
       .populate('volunteer', 'firstName lastName phone email')
       .sort({ scheduledDate: 1 });
@@ -67,21 +67,41 @@ const getMyRequests = async (req, res) => {
  */
 const createRequest = async (req, res) => {
   try {
-    const { activityType, scheduledDate, timeSlot, location, notes, companionName } = req.body;
+    const {
+      activityType,
+      activityId,
+      scheduledDate,
+      timeSlot,
+      startTime,
+      endTime,
+      communicationMethod,
+      location,
+      notes,
+      companionName,
+    } = req.body;
 
-    if (!activityType || !scheduledDate || !timeSlot) {
+    if (!activityType || !scheduledDate) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide activityType, scheduledDate, and timeSlot',
+        message: 'Please provide activityType and scheduledDate',
       });
     }
 
+    const calculatedTimeSlot =
+      timeSlot || (startTime && endTime ? `${startTime} - ${endTime}` : startTime || '02:00 PM - 04:00 PM');
+
     const newRequest = await CompanionshipRequest.create({
       elderly: req.user._id,
-      companionName: companionName || 'Assigned Volunteer',
+      volunteer: null,
+      acceptedBy: null,
+      companionName: companionName || 'Awaiting Volunteer',
       activityType,
+      activityId: activityId || null,
       scheduledDate: new Date(scheduledDate),
-      timeSlot,
+      timeSlot: calculatedTimeSlot,
+      startTime: startTime || '02:00 PM',
+      endTime: endTime || '04:00 PM',
+      communicationMethod: communicationMethod || 'chat',
       location: location || '',
       notes: notes || '',
       status: 'pending',
@@ -102,8 +122,40 @@ const createRequest = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Get all open/pending companionship requests (for volunteers to browse)
+ * @route   GET /api/companionship/open-requests
+ * @access  Private (Volunteer / All authenticated)
+ */
+const getOpenRequests = async (req, res) => {
+  try {
+    const openRequests = await CompanionshipRequest.find({
+      status: 'pending',
+      volunteer: null,
+    })
+      .populate('elderly', 'firstName lastName profilePicture phone address')
+      .sort({ scheduledDate: 1, createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      count: openRequests.length,
+      data: openRequests,
+    });
+  } catch (error) {
+    console.error('Error fetching open requests:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while fetching open requests',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getUpcomingVisits,
   getMyRequests,
+  getOpenRequests,
   createRequest,
 };
+
+
