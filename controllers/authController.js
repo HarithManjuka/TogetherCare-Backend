@@ -560,11 +560,12 @@ const updateUserProfile = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) {
+    if (typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ success: false, message: 'Please provide your email address' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(200).json({
         success: true,
@@ -614,14 +615,16 @@ const forgotPassword = async (req, res) => {
 const verifyResetOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
-    if (!email || !otp) {
+    if (typeof email !== 'string' || typeof otp !== 'string' || !email.trim() || !otp.trim()) {
       return res.status(400).json({ success: false, message: 'Email and 4-digit code are required' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedOtp = otp.trim();
 
-    const hashedOtp = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+    const hashedOtp = crypto.createHash('sha256').update(normalizedOtp).digest('hex');
 
     const user = await User.findOne({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       resetPasswordOtpHash: hashedOtp,
       resetPasswordOtpExpires: { $gt: Date.now() },
     }).select('+resetPasswordOtpHash +resetPasswordOtpExpires');
@@ -654,17 +657,26 @@ const resetPassword = async (req, res) => {
   try {
     const { email, sessionToken, newPassword } = req.body;
 
-    if (!email || !sessionToken || !newPassword) {
+    if (
+      typeof email !== 'string' ||
+      typeof sessionToken !== 'string' ||
+      typeof newPassword !== 'string' ||
+      !email.trim() ||
+      !sessionToken.trim() ||
+      !newPassword
+    ) {
       return res.status(400).json({ success: false, message: 'All fields are required' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedSessionToken = sessionToken.trim();
 
     if (newPassword.length < 4) {
       return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
     }
 
     const user = await User.findOne({
-      email: email.toLowerCase(),
-      passwordResetSessionToken: sessionToken,
+      email: normalizedEmail,
+      passwordResetSessionToken: normalizedSessionToken,
     }).select('+passwordResetSessionToken');
 
     if (!user) {
