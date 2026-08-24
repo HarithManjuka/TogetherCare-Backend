@@ -19,6 +19,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/companionship', require('./routes/companionshipRoutes'));
 app.use('/api/reviews', require('./routes/reviewRoutes'));
 app.use('/api/interests', require('./routes/interestRoutes'));
+app.use('/api/activities', require('./routes/activityRoutes'));
 app.use('/api/volunteer-offers', require('./routes/volunteerOfferRoutes'));
 app.use('/api/caregiver/dependents', require('./routes/dependentsRoutes'));
 app.use('/api/help-requests', require('./routes/helpRequestRoutes'));
