@@ -16,6 +16,8 @@ app.use(express.json());
 // Mount API Routers
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/volunteer-offers', require('./routes/volunteerOfferRoutes'));
+app.use('/api/caregiver/dependents', require('./routes/dependentsRoutes'));
+app.use('/api/help-requests', require('./routes/helpRequestRoutes'));
 
 // Health Check Route
 app.get('/api/health', (req, res) => {
