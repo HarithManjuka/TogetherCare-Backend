@@ -42,8 +42,9 @@ const getMyRequests = async (req, res) => {
   try {
     const userId = req.user._id;
     const requests = await CompanionshipRequest.find({ elderly: userId })
-      .populate('volunteer', 'firstName lastName phone email')
-      .sort({ scheduledDate: 1, createdAt: -1 });
+      .populate('volunteer', 'firstName lastName phone email profilePicture')
+      .populate('activityId', 'name icon iconFamily')
+      .sort({ scheduledDate: -1, createdAt: -1 });
 
     return res.status(200).json({
       success: true,
@@ -55,6 +56,151 @@ const getMyRequests = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error while fetching schedules',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Cancel a companionship request (by elderly user)
+ * @route   PUT /api/companionship/:id/cancel
+ * @access  Private
+ */
+const cancelRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const request = await CompanionshipRequest.findOne({
+      _id: id,
+      elderly: req.user._id,
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Companionship request not found',
+      });
+    }
+
+    if (request.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot cancel a completed visit',
+      });
+    }
+
+    request.status = 'cancelled';
+    await request.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Companionship request cancelled successfully',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Error cancelling companionship request:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while cancelling request',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Update an existing pending companionship request (by elderly user)
+ * @route   PUT /api/companionship/:id
+ * @access  Private
+ */
+const updateRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      activityType,
+      activityId,
+      scheduledDate,
+      timeSlot,
+      startTime,
+      endTime,
+      communicationMethod,
+      notes,
+    } = req.body;
+
+    const request = await CompanionshipRequest.findOne({
+      _id: id,
+      elderly: req.user._id,
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Companionship request not found',
+      });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only pending requests can be edited',
+      });
+    }
+
+    if (activityType) request.activityType = activityType;
+    if (activityId !== undefined) request.activityId = activityId;
+    if (scheduledDate) request.scheduledDate = new Date(scheduledDate);
+    if (startTime) request.startTime = startTime;
+    if (endTime) request.endTime = endTime;
+    if (timeSlot) request.timeSlot = timeSlot;
+    if (communicationMethod) request.communicationMethod = communicationMethod;
+    if (notes) request.notes = notes;
+
+    await request.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Companionship request updated successfully',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Error updating companionship request:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while updating request',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Delete a pending companionship request (by elderly user)
+ * @route   DELETE /api/companionship/:id
+ * @access  Private
+ */
+const deleteRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const request = await CompanionshipRequest.findOneAndDelete({
+      _id: id,
+      elderly: req.user._id,
+      status: 'pending',
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pending companionship request not found or cannot be deleted',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Companionship request deleted successfully',
+      data: { id },
+    });
+  } catch (error) {
+    console.error('Error deleting companionship request:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while deleting request',
       error: error.message,
     });
   }
@@ -156,6 +302,9 @@ module.exports = {
   getMyRequests,
   getOpenRequests,
   createRequest,
+  cancelRequest,
+  updateRequest,
+  deleteRequest,
 };
 
 
