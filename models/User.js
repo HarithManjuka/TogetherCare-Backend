@@ -93,6 +93,18 @@ const UserSchema = new mongoose.Schema(
       enum: ['active', 'pending_verification', 'suspended'],
       default: 'pending_verification',
     },
+    profilePicture: {
+      type: String,
+      default: '',
+    },
+    profilePicturePublicId: {
+      type: String,
+      default: '',
+    },
+    interests: {
+      type: [String],
+      default: ['Play', 'Walk', 'Chat'],
+    },
 
     // Password reset fields
     resetPasswordOtpHash: {

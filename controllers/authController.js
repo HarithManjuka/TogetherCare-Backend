@@ -1,6 +1,9 @@
 // controllers/authController.js
+const { Readable } = require('stream');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Review = require('../models/Review');
+const cloudinary = require('../config/cloudinary');
 const crypto = require('crypto');
 const { generateHumanReadableId } = require('../utils/customIdGenerator');
 const { sendPasswordResetOtpEmail } = require('../utils/emailService');
@@ -11,13 +14,36 @@ const generateToken = (id, role, customId) => {
   });
 };
 
+// Calculate age helper
 const calculateAge = (dob) => {
   const diff = Date.now() - new Date(dob).getTime();
   const ageDate = new Date(diff);
   return Math.abs(ageDate.getUTCFullYear() - 1970);
 };
 
-// @desc    Register a new user with generated customId
+// Helper: Stream buffer upload to Cloudinary
+const uploadToCloudinary = (buffer, folder = 'togethercare/profile_pictures') => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: 'image',
+        transformation: [
+          { width: 500, height: 500, crop: 'fill', gravity: 'face' },
+          { quality: 'auto', fetch_format: 'auto' },
+        ],
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+
+    Readable.from(buffer).pipe(uploadStream);
+  });
+};
+
+// @desc    Register a new user with full role validation
 // @route   POST /api/auth/register
 // @access  Public
 const registerUser = async (req, res) => {
@@ -41,13 +67,41 @@ const registerUser = async (req, res) => {
       organizationName,
     } = req.body;
 
-    if (!firstName || !lastName || !email || !password || !phone || !role || !dateOfBirth || !address) {
+    // 1. Basic Common Validations
+    const missingBasic = [];
+    if (!firstName) missingBasic.push('First Name');
+    if (!lastName) missingBasic.push('Last Name');
+    if (!email) missingBasic.push('Email');
+    if (!password) missingBasic.push('Password');
+    if (!phone) missingBasic.push('Phone');
+    if (!role) missingBasic.push('Role');
+    if (!dateOfBirth) missingBasic.push('Date of Birth');
+    if (!address) missingBasic.push('Address');
+
+    if (missingBasic.length > 0) {
       return res.status(400).json({
         success: false,
-        message: 'Please fill in all mandatory registration fields',
+        message: `Please fill in all mandatory registration fields: ${missingBasic.join(', ')}`,
+        missingFields: missingBasic,
       });
     }
 
+    const missingAddress = [];
+    if (!address.streetAddress) missingAddress.push('Street Address');
+    if (!address.city) missingAddress.push('City');
+    if (!address.postalCode) missingAddress.push('Postal Code');
+    if (!address.district) missingAddress.push('District');
+    if (!address.province) missingAddress.push('Province');
+
+    if (missingAddress.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Please complete all address fields: ${missingAddress.join(', ')}`,
+        missingFields: missingAddress,
+      });
+    }
+
+    // 2. Age Validation
     const age = calculateAge(dateOfBirth);
     if (age < 10 || age > 150) {
       return res.status(400).json({
@@ -59,10 +113,11 @@ const registerUser = async (req, res) => {
     if (role === 'elderly' && age < 40) {
       return res.status(400).json({
         success: false,
-        message: 'Elderly users must be at least 40 years old',
+        message: 'Users registering as Elderly must be at least 40 years old',
       });
     }
 
+    // 3. Check for Existing Email
     const userExists = await User.findOne({ email: email.toLowerCase() });
     if (userExists) {
       return res.status(409).json({
@@ -71,10 +126,32 @@ const registerUser = async (req, res) => {
       });
     }
 
-    // 1. Generate the unique 8-character human-friendly user ID
+    // 4. Role-Specific Validations
+    if (role === 'volunteer') {
+      if (!volunteerIdType || !volunteerIdNumber) {
+        return res.status(400).json({
+          success: false,
+          message: 'Volunteers must select an ID type (NIC/Student ID/Passport) and provide the ID number',
+        });
+      }
+      if (volunteerIdType === 'Student ID' && !educationalInstitution) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please mention your educational institution when using Student ID',
+        });
+      }
+    }
+
+    if (role === 'caregiver' && !caregiverType) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please specify whether you are a formal caregiver or family member',
+      });
+    }
+
     const customId = await generateHumanReadableId(role);
 
-    // 2. Create User record with customId
+    // 5. Create Record
     const user = await User.create({
       customId,
       firstName,
@@ -88,12 +165,20 @@ const registerUser = async (req, res) => {
       age,
       address,
       accountStatus: 'pending_verification',
+      profilePicture: '',
+      profilePicturePublicId: '',
+
+      // Elderly fields
       emergencyContact: role === 'elderly' ? emergencyContact : undefined,
       linkedCaregiverId: role === 'elderly' && linkedCaregiverId ? linkedCaregiverId : null,
+
+      // Volunteer fields
       volunteerIdType: role === 'volunteer' ? volunteerIdType : null,
       volunteerIdNumber: role === 'volunteer' ? volunteerIdNumber : '',
       educationalInstitution: role === 'volunteer' && volunteerIdType === 'Student ID' ? educationalInstitution : '',
       verificationBadgeStatus: 'unverified',
+
+      // Caregiver fields
       relationshipToElderly: role === 'caregiver' ? relationshipToElderly : '',
       organizationName: role === 'caregiver' ? organizationName : '',
     });
@@ -102,7 +187,7 @@ const registerUser = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Registration submitted successfully',
+      message: 'Registration submitted successfully (pending verification)',
       token,
       user: {
         _id: user._id,
@@ -116,6 +201,7 @@ const registerUser = async (req, res) => {
         age: user.age,
         accountStatus: user.accountStatus,
         verificationBadgeStatus: user.verificationBadgeStatus,
+        profilePicture: user.profilePicture || '',
       },
     });
   } catch (error) {
@@ -127,7 +213,7 @@ const registerUser = async (req, res) => {
   }
 };
 
-// @desc    Authenticate user & return customId
+// @desc    Authenticate user & get token
 // @route   POST /api/auth/login
 // @access  Public
 const loginUser = async (req, res) => {
@@ -167,6 +253,7 @@ const loginUser = async (req, res) => {
         caregiverType: user.caregiverType,
         accountStatus: user.accountStatus,
         verificationBadgeStatus: user.verificationBadgeStatus,
+        profilePicture: user.profilePicture || '',
       },
     });
   } catch (error) {
@@ -178,12 +265,292 @@ const loginUser = async (req, res) => {
   }
 };
 
+// @desc    Get current user profile (with reviews & rating stats from database)
+// @route   GET /api/auth/me
+// @access  Private
 const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    return res.status(200).json({ success: true, user });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const userObj = user.toObject();
+
+    // Query live reviews from MongoDB Review table
+    const reviews = await Review.find({ recipient: req.user._id });
+    const totalReviews = reviews.length;
+    let averageRating = 0;
+
+    if (totalReviews > 0) {
+      const sum = reviews.reduce((acc, curr) => acc + curr.rating, 0);
+      averageRating = Number((sum / totalReviews).toFixed(1));
+    }
+
+    userObj.averageRating = averageRating;
+    userObj.totalReviews = totalReviews;
+
+    return res.status(200).json({ success: true, user: userObj });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error fetching user profile' });
+  }
+};
+
+// @desc    Upload or update user profile picture (Cloudinary)
+// @route   PUT /api/auth/profile-picture
+// @access  Private
+const uploadProfilePicture = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    let uploadResult;
+
+    // 1. If sent as multipart/form-data with req.file
+    if (req.file && req.file.buffer) {
+      uploadResult = await uploadToCloudinary(req.file.buffer);
+    }
+    // 2. If sent as base64 string (e.g. from expo-image-picker base64: true)
+    else if (req.body && (req.body.imageBase64 || req.body.image || req.body.profilePicture)) {
+      const base64Data = req.body.imageBase64 || req.body.image || req.body.profilePicture;
+      uploadResult = await cloudinary.uploader.upload(base64Data, {
+        folder: 'togethercare/profile_pictures',
+        resource_type: 'image',
+        transformation: [
+          { width: 500, height: 500, crop: 'fill', gravity: 'face' },
+          { quality: 'auto', fetch_format: 'auto' },
+        ],
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an image file or base64 data URI',
+      });
+    }
+
+    // If an existing Cloudinary image exists, delete it first to avoid orphans
+    if (user.profilePicturePublicId && user.profilePicturePublicId !== uploadResult.public_id) {
+      try {
+        await cloudinary.uploader.destroy(user.profilePicturePublicId);
+      } catch (cloudErr) {
+        console.warn('Cloudinary delete previous picture warning:', cloudErr.message);
+      }
+    }
+
+    // Update MongoDB user record directly
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          profilePicture: uploadResult.secure_url,
+          profilePicturePublicId: uploadResult.public_id,
+        },
+      },
+      { new: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile picture uploaded successfully',
+      profilePicture: updatedUser.profilePicture,
+      user: {
+        _id: updatedUser._id,
+        firstName: updatedUser.firstName,
+        lastName: updatedUser.lastName,
+        email: updatedUser.email,
+        profilePicture: updatedUser.profilePicture,
+        role: updatedUser.role,
+      },
+    });
+  } catch (error) {
+    console.error('Profile Picture Upload Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error uploading profile picture',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Delete user profile picture (Cloudinary & Database)
+// @route   DELETE /api/auth/profile-picture
+// @access  Private
+const deleteProfilePicture = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // Delete image from Cloudinary if publicId is stored
+    if (user.profilePicturePublicId) {
+      try {
+        await cloudinary.uploader.destroy(user.profilePicturePublicId);
+      } catch (cloudErr) {
+        console.warn('Cloudinary destroy warning:', cloudErr.message);
+      }
+    }
+
+    // Explicitly update MongoDB fields to empty string
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          profilePicture: '',
+          profilePicturePublicId: '',
+        },
+      },
+      { new: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile picture deleted successfully',
+      profilePicture: '',
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('Profile Picture Deletion Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error deleting profile picture',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Update user profile (Name, Phone, Interests) - Email & Status are locked
+// @route   PUT /api/auth/profile
+// @access  Private
+const updateUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    const { firstName, lastName, phone, age, address, interests, profilePicture } = req.body;
+
+    // Validate firstName if provided
+    if (firstName !== undefined) {
+      if (!firstName.trim() || !/^[A-Za-z]+$/.test(firstName.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'First name can only contain letters (no numbers or symbols)',
+        });
+      }
+      user.firstName = firstName.trim();
+    }
+
+    // Validate lastName if provided
+    if (lastName !== undefined) {
+      if (!lastName.trim() || !/^[A-Za-z]+$/.test(lastName.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Last name can only contain letters (no numbers or symbols)',
+        });
+      }
+      user.lastName = lastName.trim();
+    }
+
+    // Validate phone if provided
+    if (phone !== undefined) {
+      const phoneRegex = /^(?:0|94|\+94)?(7[0-9]{8})$/;
+      if (!phoneRegex.test(phone.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid Sri Lankan mobile number (e.g. 07XXXXXXXX or +947XXXXXXXX)',
+        });
+      }
+      user.phone = phone.trim();
+    }
+
+    // Validate & update age if provided
+    if (age !== undefined) {
+      const numAge = Number(age);
+      if (isNaN(numAge) || numAge < 10 || numAge > 150) {
+        return res.status(400).json({
+          success: false,
+          message: 'Age must be a valid number between 10 and 150',
+        });
+      }
+      user.age = numAge;
+    }
+
+    // Validate & update address if provided
+    if (address !== undefined) {
+      if (typeof address === 'string' && address.trim()) {
+        user.address = {
+          streetAddress: user.address?.streetAddress || address.trim(),
+          city: address.trim(),
+          postalCode: user.address?.postalCode || '20000',
+          district: user.address?.district || 'Kandy',
+          province: user.address?.province || 'Central',
+        };
+      } else if (typeof address === 'object') {
+        user.address = {
+          ...(user.address || {}),
+          ...address,
+        };
+      }
+    }
+
+    // Support resetting profile picture if explicitly passed as empty
+    if (profilePicture === '') {
+      if (user.profilePicturePublicId) {
+        try {
+          await cloudinary.uploader.destroy(user.profilePicturePublicId);
+        } catch (cloudErr) {
+          console.warn('Cloudinary destroy warning:', cloudErr.message);
+        }
+      }
+      user.profilePicture = '';
+      user.profilePicturePublicId = '';
+    }
+
+    // Update interests if provided
+    if (interests !== undefined && Array.isArray(interests)) {
+      user.interests = interests;
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        age: user.age,
+        address: user.address,
+        accountStatus: user.accountStatus,
+        verificationBadgeStatus: user.verificationBadgeStatus,
+        profilePicture: user.profilePicture || '',
+        interests: user.interests || [],
+      },
+    });
+  } catch (error) {
+    console.error('Update Profile Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error updating profile',
+      error: error.message,
+    });
   }
 };
 
@@ -193,29 +560,25 @@ const getMe = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) {
+    if (typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ success: false, message: 'Please provide your email address' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      // Return success to avoid email enumeration attacks
       return res.status(200).json({
         success: true,
         message: 'If an account with this email exists, a verification code has been dispatched.',
       });
     }
 
-    // Generate cryptographically secure 4-digit code (1000 - 9999)
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
-    // Hash OTP before storing in DB
     user.resetPasswordOtpHash = crypto.createHash('sha256').update(otp).digest('hex');
-    user.resetPasswordOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.resetPasswordOtpExpires = Date.now() + 10 * 60 * 1000;
     user.passwordResetSessionToken = undefined;
     await user.save();
 
-    // Send branded email with development fallback if SMTP credentials fail
     try {
       await sendPasswordResetOtpEmail(user.email, user.firstName, otp);
       return res.status(200).json({
@@ -224,8 +587,6 @@ const forgotPassword = async (req, res) => {
       });
     } catch (emailError) {
       console.error('Forgot Password Email Dispatch Error:', emailError.message || emailError);
-
-      // Development / testing fallback: if SMTP authentication fails or credentials expire, log OTP to server console
       if (process.env.NODE_ENV !== 'production') {
         console.log(`\n======================================================`);
         console.log(`🔑 [DEV MODE OTP FALLBACK]`);
@@ -254,14 +615,16 @@ const forgotPassword = async (req, res) => {
 const verifyResetOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
-    if (!email || !otp) {
+    if (typeof email !== 'string' || typeof otp !== 'string' || !email.trim() || !otp.trim()) {
       return res.status(400).json({ success: false, message: 'Email and 4-digit code are required' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedOtp = otp.trim();
 
-    const hashedOtp = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+    const hashedOtp = crypto.createHash('sha256').update(normalizedOtp).digest('hex');
 
     const user = await User.findOne({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       resetPasswordOtpHash: hashedOtp,
       resetPasswordOtpExpires: { $gt: Date.now() },
     }).select('+resetPasswordOtpHash +resetPasswordOtpExpires');
@@ -270,7 +633,6 @@ const verifyResetOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
     }
 
-    // Issue a 15-minute authorized reset session token
     const sessionToken = crypto.randomBytes(32).toString('hex');
     user.passwordResetSessionToken = sessionToken;
     user.resetPasswordOtpHash = undefined;
@@ -295,24 +657,32 @@ const resetPassword = async (req, res) => {
   try {
     const { email, sessionToken, newPassword } = req.body;
 
-    if (!email || !sessionToken || !newPassword) {
+    if (
+      typeof email !== 'string' ||
+      typeof sessionToken !== 'string' ||
+      typeof newPassword !== 'string' ||
+      !email.trim() ||
+      !sessionToken.trim() ||
+      !newPassword
+    ) {
       return res.status(400).json({ success: false, message: 'All fields are required' });
     }
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedSessionToken = sessionToken.trim();
 
     if (newPassword.length < 4) {
       return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
     }
 
     const user = await User.findOne({
-      email: email.toLowerCase(),
-      passwordResetSessionToken: sessionToken,
+      email: normalizedEmail,
+      passwordResetSessionToken: normalizedSessionToken,
     }).select('+passwordResetSessionToken');
 
     if (!user) {
       return res.status(400).json({ success: false, message: 'Invalid or expired reset session. Please request a new code.' });
     }
 
-    // Set new password (pre-save hook hashes it automatically)
     user.password = newPassword;
     user.passwordResetSessionToken = undefined;
     await user.save();
@@ -331,6 +701,9 @@ module.exports = {
   registerUser,
   loginUser,
   getMe,
+  uploadProfilePicture,
+  deleteProfilePicture,
+  updateUserProfile,
   forgotPassword,
   verifyResetOtp,
   resetPassword,
