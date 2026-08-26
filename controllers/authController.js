@@ -1,12 +1,14 @@
 // controllers/authController.js
-const { Readable } = require('stream');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Review = require('../models/Review');
-const cloudinary = require('../config/cloudinary');
 const crypto = require('crypto');
 const { generateHumanReadableId } = require('../utils/customIdGenerator');
 const { sendPasswordResetOtpEmail } = require('../utils/emailService');
+const {
+  uploadUserProfilePicture,
+  deleteUserProfilePicture,
+} = require('../services/cloudinaryService');
 
 const generateToken = (id, role, customId) => {
   return jwt.sign({ id, role, customId }, process.env.JWT_SECRET, {
@@ -16,32 +18,31 @@ const generateToken = (id, role, customId) => {
 
 // Calculate age helper
 const calculateAge = (dob) => {
-  const diff = Date.now() - new Date(dob).getTime();
-  const ageDate = new Date(diff);
-  return Math.abs(ageDate.getUTCFullYear() - 1970);
+  if (!dob) return null;
+  const today = new Date();
+  const birthDate = new Date(dob);
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return Math.max(0, age);
 };
 
-// Helper: Stream buffer upload to Cloudinary
-const uploadToCloudinary = (buffer, folder = 'togethercare/profile_pictures') => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: 'image',
-        transformation: [
-          { width: 500, height: 500, crop: 'fill', gravity: 'face' },
-          { quality: 'auto', fetch_format: 'auto' },
-        ],
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        resolve(result);
-      }
-    );
-
-    Readable.from(buffer).pipe(uploadStream);
-  });
+// Helper: Sanitize user object for API responses (removes password and sensitive reset tokens, guarantees up-to-date age)
+const sanitizeUser = (user) => {
+  const userObj = typeof user.toObject === 'function' ? user.toObject({ virtuals: true }) : { ...user };
+  if (userObj.dateOfBirth) {
+    userObj.age = calculateAge(userObj.dateOfBirth);
+  }
+  delete userObj.password;
+  delete userObj.resetPasswordOtpHash;
+  delete userObj.resetPasswordOtpExpires;
+  delete userObj.passwordResetSessionToken;
+  return userObj;
 };
+
+
 
 // @desc    Register a new user with full role validation
 // @route   POST /api/auth/register
@@ -189,20 +190,7 @@ const registerUser = async (req, res) => {
       success: true,
       message: 'Registration submitted successfully (pending verification)',
       token,
-      user: {
-        _id: user._id,
-        customId: user.customId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        caregiverType: user.caregiverType,
-        age: user.age,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-        profilePicture: user.profilePicture || '',
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Registration Error:', error);
@@ -242,19 +230,7 @@ const loginUser = async (req, res) => {
       success: true,
       message: 'Login successful',
       token,
-      user: {
-        _id: user._id,
-        customId: user.customId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        caregiverType: user.caregiverType,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-        profilePicture: user.profilePicture || '',
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Login Error:', error);
@@ -313,19 +289,12 @@ const uploadProfilePicture = async (req, res) => {
 
     // 1. If sent as multipart/form-data with req.file
     if (req.file && req.file.buffer) {
-      uploadResult = await uploadToCloudinary(req.file.buffer);
+      uploadResult = await uploadUserProfilePicture({ buffer: req.file.buffer });
     }
     // 2. If sent as base64 string (e.g. from expo-image-picker base64: true)
     else if (req.body && (req.body.imageBase64 || req.body.image || req.body.profilePicture)) {
       const base64Data = req.body.imageBase64 || req.body.image || req.body.profilePicture;
-      uploadResult = await cloudinary.uploader.upload(base64Data, {
-        folder: 'togethercare/profile_pictures',
-        resource_type: 'image',
-        transformation: [
-          { width: 500, height: 500, crop: 'fill', gravity: 'face' },
-          { quality: 'auto', fetch_format: 'auto' },
-        ],
-      });
+      uploadResult = await uploadUserProfilePicture({ base64Data });
     } else {
       return res.status(400).json({
         success: false,
@@ -335,11 +304,7 @@ const uploadProfilePicture = async (req, res) => {
 
     // If an existing Cloudinary image exists, delete it first to avoid orphans
     if (user.profilePicturePublicId && user.profilePicturePublicId !== uploadResult.public_id) {
-      try {
-        await cloudinary.uploader.destroy(user.profilePicturePublicId);
-      } catch (cloudErr) {
-        console.warn('Cloudinary delete previous picture warning:', cloudErr.message);
-      }
+      await deleteUserProfilePicture(user.profilePicturePublicId);
     }
 
     // Update MongoDB user record directly
@@ -358,14 +323,7 @@ const uploadProfilePicture = async (req, res) => {
       success: true,
       message: 'Profile picture uploaded successfully',
       profilePicture: updatedUser.profilePicture,
-      user: {
-        _id: updatedUser._id,
-        firstName: updatedUser.firstName,
-        lastName: updatedUser.lastName,
-        email: updatedUser.email,
-        profilePicture: updatedUser.profilePicture,
-        role: updatedUser.role,
-      },
+      user: sanitizeUser(updatedUser),
     });
   } catch (error) {
     console.error('Profile Picture Upload Error:', error);
@@ -392,11 +350,7 @@ const deleteProfilePicture = async (req, res) => {
 
     // Delete image from Cloudinary if publicId is stored
     if (user.profilePicturePublicId) {
-      try {
-        await cloudinary.uploader.destroy(user.profilePicturePublicId);
-      } catch (cloudErr) {
-        console.warn('Cloudinary destroy warning:', cloudErr.message);
-      }
+      await deleteUserProfilePicture(user.profilePicturePublicId);
     }
 
     // Explicitly update MongoDB fields to empty string
@@ -509,11 +463,7 @@ const updateUserProfile = async (req, res) => {
     // Support resetting profile picture if explicitly passed as empty
     if (profilePicture === '') {
       if (user.profilePicturePublicId) {
-        try {
-          await cloudinary.uploader.destroy(user.profilePicturePublicId);
-        } catch (cloudErr) {
-          console.warn('Cloudinary destroy warning:', cloudErr.message);
-        }
+        await deleteUserProfilePicture(user.profilePicturePublicId);
       }
       user.profilePicture = '';
       user.profilePicturePublicId = '';
