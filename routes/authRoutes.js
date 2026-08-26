@@ -5,6 +5,7 @@ const {
   registerUser,
   loginUser,
   getMe,
+  getAllUsers,
   uploadProfilePicture,
   deleteProfilePicture,
   updateUserProfile,
@@ -19,8 +20,9 @@ const { handleUpload } = require('../middleware/uploadMiddleware');
 router.post('/register', registerUser);
 router.post('/login', loginUser);
 
-// Protected user profile routes
+// Protected user profile & list routes
 router.get('/me', protect, getMe);
+router.get('/users', protect, getAllUsers);
 router.put('/profile', protect, updateUserProfile);
 
 // Profile picture upload / update / delete routes (Accepts multipart or base64 JSON)

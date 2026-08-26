@@ -10,7 +10,7 @@ exports.getDependents = async (req, res) => {
     const dependents = await User.find({
       linkedCaregiverId: req.user._id,
       role: 'elderly',
-    });
+    }).select('-password -resetPasswordOtpHash -resetPasswordOtpExpires -passwordResetSessionToken');
 
     res.status(200).json({
       success: true,

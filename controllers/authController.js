@@ -381,11 +381,39 @@ const deleteProfilePicture = async (req, res) => {
   }
 };
 
-// @desc    Update user profile (Name, Phone, Interests) - Email & Status are locked
+// RESTRICTED FIELDS THAT CANNOT BE MODIFIED VIA USER PROFILE UPDATE
+const RESTRICTED_PROFILE_FIELDS = [
+  'role',
+  'customId',
+  'accountStatus',
+  'verificationBadgeStatus',
+  'isEmailVerified',
+  'password',
+  '_id',
+  'resetPasswordOtpHash',
+  'resetPasswordOtpExpires',
+  'passwordResetSessionToken',
+];
+
+// @desc    Update user profile - Strict whitelist of editable fields
 // @route   PUT /api/auth/profile
 // @access  Private
 const updateUserProfile = async (req, res) => {
   try {
+    // 1. Check for attempted mass-assignment / privilege escalation fields
+    const attemptedRestricted = Object.keys(req.body || {}).filter((key) =>
+      RESTRICTED_PROFILE_FIELDS.includes(key)
+    );
+
+    if (attemptedRestricted.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Security exception: You are not authorized to modify restricted field(s): ${attemptedRestricted.join(
+          ', '
+        )}`,
+      });
+    }
+
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({
@@ -394,9 +422,24 @@ const updateUserProfile = async (req, res) => {
       });
     }
 
-    const { firstName, lastName, phone, age, address, interests, profilePicture } = req.body;
+    const {
+      firstName,
+      lastName,
+      phone,
+      dateOfBirth,
+      age,
+      address,
+      interests,
+      profilePicture,
+      emergencyContact,
+      relationshipToElderly,
+      organizationName,
+      volunteerIdType,
+      volunteerIdNumber,
+      educationalInstitution,
+    } = req.body;
 
-    // Validate firstName if provided
+    // Validate & update firstName if provided
     if (firstName !== undefined) {
       if (!firstName.trim() || !/^[A-Za-z]+$/.test(firstName.trim())) {
         return res.status(400).json({
@@ -407,7 +450,7 @@ const updateUserProfile = async (req, res) => {
       user.firstName = firstName.trim();
     }
 
-    // Validate lastName if provided
+    // Validate & update lastName if provided
     if (lastName !== undefined) {
       if (!lastName.trim() || !/^[A-Za-z]+$/.test(lastName.trim())) {
         return res.status(400).json({
@@ -418,7 +461,7 @@ const updateUserProfile = async (req, res) => {
       user.lastName = lastName.trim();
     }
 
-    // Validate phone if provided
+    // Validate & update phone if provided
     if (phone !== undefined) {
       const phoneRegex = /^(?:0|94|\+94)?(7[0-9]{8})$/;
       if (!phoneRegex.test(phone.trim())) {
@@ -428,6 +471,18 @@ const updateUserProfile = async (req, res) => {
         });
       }
       user.phone = phone.trim();
+    }
+
+    // Validate & update dateOfBirth if provided
+    if (dateOfBirth !== undefined) {
+      const dobDate = new Date(dateOfBirth);
+      if (isNaN(dobDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid date of birth',
+        });
+      }
+      user.dateOfBirth = dobDate;
     }
 
     // Validate & update age if provided
@@ -474,25 +529,39 @@ const updateUserProfile = async (req, res) => {
       user.interests = interests;
     }
 
+    // Elderly fields
+    if (emergencyContact !== undefined && typeof emergencyContact === 'object') {
+      user.emergencyContact = {
+        ...(user.emergencyContact || {}),
+        ...emergencyContact,
+      };
+    }
+
+    // Caregiver fields
+    if (relationshipToElderly !== undefined) {
+      user.relationshipToElderly = String(relationshipToElderly).trim();
+    }
+    if (organizationName !== undefined) {
+      user.organizationName = String(organizationName).trim();
+    }
+
+    // Volunteer fields
+    if (volunteerIdType !== undefined) {
+      user.volunteerIdType = volunteerIdType;
+    }
+    if (volunteerIdNumber !== undefined) {
+      user.volunteerIdNumber = String(volunteerIdNumber).trim();
+    }
+    if (educationalInstitution !== undefined) {
+      user.educationalInstitution = String(educationalInstitution).trim();
+    }
+
     await user.save();
 
     return res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      user: {
-        _id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        age: user.age,
-        address: user.address,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-        profilePicture: user.profilePicture || '',
-        interests: user.interests || [],
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Update Profile Error:', error);
@@ -647,10 +716,34 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// @desc    Get all users with strict field projection to prevent sensitive data leaks
+// @route   GET /api/auth/users
+// @access  Private
+const getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find()
+      .select('firstName lastName customId email role phone address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: users.length,
+      users,
+    });
+  } catch (error) {
+    console.error('Get All Users Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error fetching user list',
+    });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
   getMe,
+  getAllUsers,
   uploadProfilePicture,
   deleteProfilePicture,
   updateUserProfile,
