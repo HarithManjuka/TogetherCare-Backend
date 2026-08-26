@@ -12,6 +12,8 @@ const {
   forgotPassword,
   verifyResetOtp,
   resetPassword,
+  sendEmailVerificationOtp,
+  verifyProfileEmail,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
@@ -24,6 +26,10 @@ router.post('/login', loginUser);
 router.get('/me', protect, getMe);
 router.get('/users', protect, getAllUsers);
 router.put('/profile', protect, updateUserProfile);
+
+// Email Verification Flow
+router.post('/send-email-verification-otp', protect, sendEmailVerificationOtp);
+router.post('/verify-profile-email', protect, verifyProfileEmail);
 
 // Profile picture upload / update / delete routes (Accepts multipart or base64 JSON)
 router.put(

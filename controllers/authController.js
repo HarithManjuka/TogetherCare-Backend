@@ -5,6 +5,7 @@ const Review = require('../models/Review');
 const crypto = require('crypto');
 const { generateHumanReadableId } = require('../utils/customIdGenerator');
 const { sendPasswordResetOtpEmail } = require('../utils/emailService');
+const { sendAccountEmailVerificationOtp } = require('../utils/emailService');
 const {
   uploadUserProfilePicture,
   deleteUserProfilePicture,
@@ -739,6 +740,91 @@ const getAllUsers = async (req, res) => {
   }
 };
 
+
+// @desc    Request In-Profile Email Verification Code
+// @route   POST /api/auth/send-email-verification-otp
+// @access  Private
+const sendEmailVerificationOtp = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({ success: false, message: 'Your email is already verified' });
+    }
+
+    // Generate 4-digit code (1000 - 9999)
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Hash and store OTP
+    user.emailVerificationOtpHash = crypto.createHash('sha256').update(otp).digest('hex');
+    user.emailVerificationOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    await user.save();
+
+    // Send email from togethercareadmin@gmail.com
+    await sendAccountEmailVerificationOtp(user.email, user.firstName, otp);
+
+    return res.status(200).json({
+      success: true,
+      message: `Verification code sent to ${user.email}`,
+    });
+  } catch (error) {
+    console.error('Send Email Verification OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to send verification code' });
+  }
+};
+
+// @desc    Verify 4-Digit Email Code
+// @route   POST /api/auth/verify-profile-email
+// @access  Private
+const verifyProfileEmail = async (req, res) => {
+  try {
+    const { otp } = req.body;
+    if (!otp) {
+      return res.status(400).json({ success: false, message: 'Please provide the 4-digit verification code' });
+    }
+
+    const hashedOtp = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+
+    const user = await User.findOne({
+      _id: req.user._id,
+      emailVerificationOtpHash: hashedOtp,
+      emailVerificationOtpExpires: { $gt: Date.now() },
+    }).select('+emailVerificationOtpHash +emailVerificationOtpExpires');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
+    }
+
+    user.isEmailVerified = true;
+    user.accountStatus = 'active';
+    user.emailVerificationOtpHash = undefined;
+    user.emailVerificationOtpExpires = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Email address successfully verified!',
+      user: {
+        _id: user._id,
+        customId: user.customId,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        accountStatus: user.accountStatus,
+        verificationBadgeStatus: user.verificationBadgeStatus,
+      },
+    });
+  } catch (error) {
+    console.error('Verify Profile Email Error:', error);
+    return res.status(500).json({ success: false, message: 'Error verifying email address' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -750,4 +836,6 @@ module.exports = {
   forgotPassword,
   verifyResetOtp,
   resetPassword,
+  sendEmailVerificationOtp,
+  verifyProfileEmail,
 };

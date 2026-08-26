@@ -120,6 +120,20 @@ const UserSchema = new mongoose.Schema(
       select: false,
     },
 
+    // Email Verification Fields
+    isEmailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerificationOtpHash: {
+      type: String,
+      select: false,
+    },
+    emailVerificationOtpExpires: {
+      type: Date,
+      select: false,
+    },
+
     // Elderly specific
     emergencyContact: {
       name: { type: String, default: '' },
