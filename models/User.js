@@ -156,12 +156,28 @@ const UserSchema = new mongoose.Schema(
   }
 );
 
+// Helper to calculate exact age dynamically based on current date and DOB
+const calculateExactAge = (dob) => {
+  if (!dob) return null;
+  const today = new Date();
+  const birthDate = new Date(dob);
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return Math.max(0, age);
+};
+
+// Virtual property for real-time age computation
+UserSchema.virtual('currentAge').get(function () {
+  return calculateExactAge(this.dateOfBirth) || this.age;
+});
+
 // Pre-save hook: Hash password and compute age
 UserSchema.pre('save', async function () {
   if (this.dateOfBirth) {
-    const diff = Date.now() - new Date(this.dateOfBirth).getTime();
-    const ageDate = new Date(diff);
-    this.age = Math.abs(ageDate.getUTCFullYear() - 1970);
+    this.age = calculateExactAge(this.dateOfBirth);
 
     if (this.role === 'elderly' && this.age < 40) {
       throw new Error('Elderly users must be at least 40 years old');
