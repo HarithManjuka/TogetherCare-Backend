@@ -59,6 +59,7 @@ const registerUser = async (req, res) => {
       role,
       caregiverType,
       dateOfBirth,
+      gender,
       address,
       emergencyContact,
       linkedCaregiverId,
@@ -153,6 +154,9 @@ const registerUser = async (req, res) => {
 
     const customId = await generateHumanReadableId(role);
 
+    const validGenders = ['male', 'female', 'other', 'not_specified'];
+    const userGender = gender && validGenders.includes(String(gender).toLowerCase().trim()) ? String(gender).toLowerCase().trim() : 'not_specified';
+
     // 5. Create Record
     const user = await User.create({
       customId,
@@ -164,6 +168,7 @@ const registerUser = async (req, res) => {
       role,
       caregiverType: role === 'caregiver' ? caregiverType : null,
       dateOfBirth,
+      gender: userGender,
       age,
       address,
       accountStatus: 'pending_verification',
@@ -428,6 +433,7 @@ const updateUserProfile = async (req, res) => {
       lastName,
       phone,
       dateOfBirth,
+      gender,
       age,
       address,
       interests,
@@ -484,6 +490,19 @@ const updateUserProfile = async (req, res) => {
         });
       }
       user.dateOfBirth = dobDate;
+    }
+
+    // Validate & update gender if provided
+    if (gender !== undefined) {
+      const validGenders = ['male', 'female', 'other', 'not_specified'];
+      const normalizedGender = String(gender).toLowerCase().trim();
+      if (!validGenders.includes(normalizedGender)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Gender must be male, female, other, or not_specified',
+        });
+      }
+      user.gender = normalizedGender;
     }
 
     // Validate & update age if provided
@@ -723,7 +742,7 @@ const resetPassword = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.find()
-      .select('firstName lastName customId email role phone address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
+      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
       .lean();
 
     return res.status(200).json({
