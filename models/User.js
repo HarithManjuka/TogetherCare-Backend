@@ -76,6 +76,13 @@ const UserSchema = new mongoose.Schema(
       type: Date,
       required: [true, 'Date of birth is required'],
     },
+    gender: {
+      type: String,
+      enum: ['male', 'female', 'other', 'not_specified'],
+      default: 'not_specified',
+      lowercase: true,
+      trim: true,
+    },
     age: {
       type: Number,
       min: 10,
