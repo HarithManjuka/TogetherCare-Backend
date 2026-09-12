@@ -780,12 +780,30 @@ const sendEmailVerificationOtp = async (req, res) => {
     user.emailVerificationOtpExpires = Date.now() + 10 * 60 * 1000;
     await user.save();
 
-    await sendAccountEmailVerificationOtp(user.email, user.firstName, otp);
+    try {
+      await sendAccountEmailVerificationOtp(user.email, user.firstName, otp);
+      return res.status(200).json({
+        success: true,
+        message: `Verification code sent to ${user.email}`,
+      });
+    } catch (emailError) {
+      console.error('Send Email Verification OTP Error:', emailError.message || emailError);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`\n======================================================`);
+        console.log(`🔑 [DEV MODE OTP FALLBACK]`);
+        console.log(`Target Email : ${user.email}`);
+        console.log(`Verify OTP   : ${otp}`);
+        console.log(`Note         : SMTP delivery failed. OTP logged here for local testing.`);
+        console.log(`======================================================\n`);
 
-    return res.status(200).json({
-      success: true,
-      message: `Verification code sent to ${user.email}`,
-    });
+        return res.status(200).json({
+          success: true,
+          message: `Verification code sent to ${user.email}`,
+        });
+      }
+
+      return res.status(500).json({ success: false, message: 'Failed to send verification code' });
+    }
   } catch (error) {
     console.error('Send Email Verification OTP Error:', error);
     return res.status(500).json({ success: false, message: 'Failed to send verification code' });
