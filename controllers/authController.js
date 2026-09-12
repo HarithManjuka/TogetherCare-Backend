@@ -841,6 +841,54 @@ const verifyProfileEmail = async (req, res) => {
   }
 };
 
+// @desc    Admin: Update volunteer/user verification badge status
+// @route   PATCH /api/auth/users/:id/verification
+// @access  Private (Admin)
+const updateUserVerificationStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (status) user.verificationBadgeStatus = status;
+    if (status === 'verified') user.accountStatus = 'active';
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Verification status updated to ${status}`,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Update Verification Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating verification status' });
+  }
+};
+
+// @desc    Admin: Delete user account
+// @route   DELETE /api/auth/users/:id
+// @access  Private (Admin)
+const deleteUserAccount = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
+
+    return res.status(200).json({
+      success: true,
+      message: `User account ${user.customId} deleted successfully`,
+    });
+  } catch (error) {
+    console.error('Delete User Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error deleting user' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -854,4 +902,6 @@ module.exports = {
   resetPassword,
   sendEmailVerificationOtp,
   verifyProfileEmail,
+  updateUserVerificationStatus,
+  deleteUserAccount,
 };

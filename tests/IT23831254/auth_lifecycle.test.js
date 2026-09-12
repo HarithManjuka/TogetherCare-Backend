@@ -1,9 +1,9 @@
-// tests/auth.test.js
+// tests/IT23831254/auth_lifecycle.test.js
 const request = require('supertest');
-const app = require('../server');
-require('./setup');
+const app = require('../../server');
+require('../setup');
 
-describe('Auth & User Lifecycle Integration Tests', () => {
+describe('IT23831254: Auth & User Lifecycle Integration Tests', () => {
   const testElderlyPayload = {
     firstName: 'Nimal',
     lastName: 'Perera',
