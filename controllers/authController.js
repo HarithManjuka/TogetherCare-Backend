@@ -1,10 +1,10 @@
 // controllers/authController.js
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Review = require('../models/Review');
-const crypto = require('crypto');
-const { generateHumanReadableId } = require('../utils/customIdGenerator');
-const { sendPasswordResetOtpEmail } = require('../utils/emailService');
+const { generateHumanReadableId, fixDuplicateUserIds } = require('../utils/customIdGenerator');
+const { sendPasswordResetOtpEmail, sendAccountEmailVerificationOtp } = require('../utils/emailService');
 const {
   uploadUserProfilePicture,
   deleteUserProfilePicture,
@@ -29,22 +29,33 @@ const calculateAge = (dob) => {
   return Math.max(0, age);
 };
 
-// Helper: Sanitize user object for API responses (removes password and sensitive reset tokens, guarantees up-to-date age)
+// Helper: Sanitize user object for API responses
 const sanitizeUser = (user) => {
   const userObj = typeof user.toObject === 'function' ? user.toObject({ virtuals: true }) : { ...user };
   if (userObj.dateOfBirth) {
     userObj.age = calculateAge(userObj.dateOfBirth);
   }
+  if (!userObj.customId || userObj.customId.includes('{prefix}') || userObj.customId.includes('({prefix}')) {
+    const rolePrefixMap = {
+      elderly: 'ELD',
+      volunteer: 'VOL',
+      caregiver: 'CG',
+      admin: 'ADM',
+    };
+    const prefix = rolePrefixMap[userObj.role] || 'USR';
+    const shortId = String(userObj._id || '').slice(-4).toUpperCase() || '0001';
+    userObj.customId = `${prefix}-${shortId}`;
+  }
   delete userObj.password;
   delete userObj.resetPasswordOtpHash;
   delete userObj.resetPasswordOtpExpires;
   delete userObj.passwordResetSessionToken;
+  delete userObj.emailVerificationOtpHash;
+  delete userObj.emailVerificationOtpExpires;
   return userObj;
 };
 
-
-
-// @desc    Register a new user with full role validation
+// @desc    Register a new user with full role validation and atomic ID generation
 // @route   POST /api/auth/register
 // @access  Public
 const registerUser = async (req, res) => {
@@ -58,6 +69,7 @@ const registerUser = async (req, res) => {
       role,
       caregiverType,
       dateOfBirth,
+      gender,
       address,
       emergencyContact,
       linkedCaregiverId,
@@ -150,7 +162,13 @@ const registerUser = async (req, res) => {
       });
     }
 
+    // Atomic Sequential ID Generation
     const customId = await generateHumanReadableId(role);
+
+    const validGenders = ['male', 'female', 'other', 'not_specified'];
+    const userGender = gender && validGenders.includes(String(gender).toLowerCase().trim())
+      ? String(gender).toLowerCase().trim()
+      : 'not_specified';
 
     // 5. Create Record
     const user = await User.create({
@@ -163,6 +181,7 @@ const registerUser = async (req, res) => {
       role,
       caregiverType: role === 'caregiver' ? caregiverType : null,
       dateOfBirth,
+      gender: userGender,
       age,
       address,
       accountStatus: 'pending_verification',
@@ -251,9 +270,14 @@ const getMe = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const userObj = user.toObject();
+    if (!user.customId || user.customId.includes('{prefix}') || user.customId.includes('({prefix}')) {
+      const { generateHumanReadableId } = require('../utils/customIdGenerator');
+      user.customId = await generateHumanReadableId(user.role || 'elderly');
+      await user.save();
+    }
 
-    // Query live reviews from MongoDB Review table
+    const userObj = sanitizeUser(user);
+
     const reviews = await Review.find({ recipient: req.user._id });
     const totalReviews = reviews.length;
     let averageRating = 0;
@@ -287,12 +311,9 @@ const uploadProfilePicture = async (req, res) => {
 
     let uploadResult;
 
-    // 1. If sent as multipart/form-data with req.file
     if (req.file && req.file.buffer) {
       uploadResult = await uploadUserProfilePicture({ buffer: req.file.buffer });
-    }
-    // 2. If sent as base64 string (e.g. from expo-image-picker base64: true)
-    else if (req.body && (req.body.imageBase64 || req.body.image || req.body.profilePicture)) {
+    } else if (req.body && (req.body.imageBase64 || req.body.image || req.body.profilePicture)) {
       const base64Data = req.body.imageBase64 || req.body.image || req.body.profilePicture;
       uploadResult = await uploadUserProfilePicture({ base64Data });
     } else {
@@ -302,12 +323,10 @@ const uploadProfilePicture = async (req, res) => {
       });
     }
 
-    // If an existing Cloudinary image exists, delete it first to avoid orphans
     if (user.profilePicturePublicId && user.profilePicturePublicId !== uploadResult.public_id) {
       await deleteUserProfilePicture(user.profilePicturePublicId);
     }
 
-    // Update MongoDB user record directly
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
@@ -348,12 +367,10 @@ const deleteProfilePicture = async (req, res) => {
       });
     }
 
-    // Delete image from Cloudinary if publicId is stored
     if (user.profilePicturePublicId) {
       await deleteUserProfilePicture(user.profilePicturePublicId);
     }
 
-    // Explicitly update MongoDB fields to empty string
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
@@ -369,7 +386,7 @@ const deleteProfilePicture = async (req, res) => {
       success: true,
       message: 'Profile picture deleted successfully',
       profilePicture: '',
-      user: updatedUser,
+      user: sanitizeUser(updatedUser),
     });
   } catch (error) {
     console.error('Profile Picture Deletion Error:', error);
@@ -381,11 +398,39 @@ const deleteProfilePicture = async (req, res) => {
   }
 };
 
-// @desc    Update user profile (Name, Phone, Interests) - Email & Status are locked
+const RESTRICTED_PROFILE_FIELDS = [
+  'role',
+  'customId',
+  'accountStatus',
+  'verificationBadgeStatus',
+  'isEmailVerified',
+  'password',
+  '_id',
+  'resetPasswordOtpHash',
+  'resetPasswordOtpExpires',
+  'passwordResetSessionToken',
+  'emailVerificationOtpHash',
+  'emailVerificationOtpExpires',
+];
+
+// @desc    Update user profile - Strict whitelist of editable fields
 // @route   PUT /api/auth/profile
 // @access  Private
 const updateUserProfile = async (req, res) => {
   try {
+    const attemptedRestricted = Object.keys(req.body || {}).filter((key) =>
+      RESTRICTED_PROFILE_FIELDS.includes(key)
+    );
+
+    if (attemptedRestricted.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Security exception: You are not authorized to modify restricted field(s): ${attemptedRestricted.join(
+          ', '
+        )}`,
+      });
+    }
+
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({
@@ -394,9 +439,24 @@ const updateUserProfile = async (req, res) => {
       });
     }
 
-    const { firstName, lastName, phone, age, address, interests, profilePicture } = req.body;
+    const {
+      firstName,
+      lastName,
+      phone,
+      dateOfBirth,
+      gender,
+      age,
+      address,
+      interests,
+      profilePicture,
+      emergencyContact,
+      relationshipToElderly,
+      organizationName,
+      volunteerIdType,
+      volunteerIdNumber,
+      educationalInstitution,
+    } = req.body;
 
-    // Validate firstName if provided
     if (firstName !== undefined) {
       if (!firstName.trim() || !/^[A-Za-z]+$/.test(firstName.trim())) {
         return res.status(400).json({
@@ -407,7 +467,6 @@ const updateUserProfile = async (req, res) => {
       user.firstName = firstName.trim();
     }
 
-    // Validate lastName if provided
     if (lastName !== undefined) {
       if (!lastName.trim() || !/^[A-Za-z]+$/.test(lastName.trim())) {
         return res.status(400).json({
@@ -418,7 +477,6 @@ const updateUserProfile = async (req, res) => {
       user.lastName = lastName.trim();
     }
 
-    // Validate phone if provided
     if (phone !== undefined) {
       const phoneRegex = /^(?:0|94|\+94)?(7[0-9]{8})$/;
       if (!phoneRegex.test(phone.trim())) {
@@ -430,7 +488,29 @@ const updateUserProfile = async (req, res) => {
       user.phone = phone.trim();
     }
 
-    // Validate & update age if provided
+    if (dateOfBirth !== undefined) {
+      const dobDate = new Date(dateOfBirth);
+      if (isNaN(dobDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid date of birth',
+        });
+      }
+      user.dateOfBirth = dobDate;
+    }
+
+    if (gender !== undefined) {
+      const validGenders = ['male', 'female', 'other', 'not_specified'];
+      const normalizedGender = String(gender).toLowerCase().trim();
+      if (!validGenders.includes(normalizedGender)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Gender must be male, female, other, or not_specified',
+        });
+      }
+      user.gender = normalizedGender;
+    }
+
     if (age !== undefined) {
       const numAge = Number(age);
       if (isNaN(numAge) || numAge < 10 || numAge > 150) {
@@ -442,7 +522,6 @@ const updateUserProfile = async (req, res) => {
       user.age = numAge;
     }
 
-    // Validate & update address if provided
     if (address !== undefined) {
       if (typeof address === 'string' && address.trim()) {
         user.address = {
@@ -460,7 +539,6 @@ const updateUserProfile = async (req, res) => {
       }
     }
 
-    // Support resetting profile picture if explicitly passed as empty
     if (profilePicture === '') {
       if (user.profilePicturePublicId) {
         await deleteUserProfilePicture(user.profilePicturePublicId);
@@ -469,9 +547,32 @@ const updateUserProfile = async (req, res) => {
       user.profilePicturePublicId = '';
     }
 
-    // Update interests if provided
     if (interests !== undefined && Array.isArray(interests)) {
       user.interests = interests;
+    }
+
+    if (emergencyContact !== undefined && typeof emergencyContact === 'object') {
+      user.emergencyContact = {
+        ...(user.emergencyContact || {}),
+        ...emergencyContact,
+      };
+    }
+
+    if (relationshipToElderly !== undefined) {
+      user.relationshipToElderly = String(relationshipToElderly).trim();
+    }
+    if (organizationName !== undefined) {
+      user.organizationName = String(organizationName).trim();
+    }
+
+    if (volunteerIdType !== undefined) {
+      user.volunteerIdType = volunteerIdType;
+    }
+    if (volunteerIdNumber !== undefined) {
+      user.volunteerIdNumber = String(volunteerIdNumber).trim();
+    }
+    if (educationalInstitution !== undefined) {
+      user.educationalInstitution = String(educationalInstitution).trim();
     }
 
     await user.save();
@@ -479,20 +580,7 @@ const updateUserProfile = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      user: {
-        _id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        age: user.age,
-        address: user.address,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-        profilePicture: user.profilePicture || '',
-        interests: user.interests || [],
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Update Profile Error:', error);
@@ -647,14 +735,191 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// @desc    Get all users with strict field projection to prevent sensitive data leaks
+// @route   GET /api/auth/users
+// @access  Private
+const getAllUsers = async (req, res) => {
+  try {
+    await fixDuplicateUserIds();
+
+    const users = await User.find()
+      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: users.length,
+      users,
+    });
+  } catch (error) {
+    console.error('Get All Users Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error fetching user list',
+    });
+  }
+};
+
+// @desc    Request In-Profile Email Verification Code
+// @route   POST /api/auth/send-email-verification-otp
+// @access  Private
+const sendEmailVerificationOtp = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({ success: false, message: 'Your email is already verified' });
+    }
+
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+    user.emailVerificationOtpHash = crypto.createHash('sha256').update(otp).digest('hex');
+    user.emailVerificationOtpExpires = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    try {
+      await sendAccountEmailVerificationOtp(user.email, user.firstName, otp);
+      return res.status(200).json({
+        success: true,
+        message: `Verification code sent to ${user.email}`,
+      });
+    } catch (emailError) {
+      console.error('Send Email Verification OTP Error:', emailError.message || emailError);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`\n======================================================`);
+        console.log(`🔑 [DEV MODE OTP FALLBACK]`);
+        console.log(`Target Email : ${user.email}`);
+        console.log(`Verify OTP   : ${otp}`);
+        console.log(`Note         : SMTP delivery failed. OTP logged here for local testing.`);
+        console.log(`======================================================\n`);
+
+        return res.status(200).json({
+          success: true,
+          message: `Verification code sent to ${user.email}`,
+        });
+      }
+
+      return res.status(500).json({ success: false, message: 'Failed to send verification code' });
+    }
+  } catch (error) {
+    console.error('Send Email Verification OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to send verification code' });
+  }
+};
+
+// @desc    Verify 4-Digit Email Code
+// @route   POST /api/auth/verify-profile-email
+// @access  Private
+const verifyProfileEmail = async (req, res) => {
+  try {
+    const { otp } = req.body;
+    if (!otp) {
+      return res.status(400).json({ success: false, message: 'Please provide the 4-digit verification code' });
+    }
+
+    const hashedOtp = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+
+    const user = await User.findOne({
+      _id: req.user._id,
+      emailVerificationOtpHash: hashedOtp,
+      emailVerificationOtpExpires: { $gt: Date.now() },
+    }).select('+emailVerificationOtpHash +emailVerificationOtpExpires');
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
+    }
+
+    user.isEmailVerified = true;
+    user.accountStatus = 'active';
+    user.emailVerificationOtpHash = undefined;
+    user.emailVerificationOtpExpires = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Email address successfully verified!',
+      user: {
+        _id: user._id,
+        customId: user.customId,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        accountStatus: user.accountStatus,
+        verificationBadgeStatus: user.verificationBadgeStatus,
+      },
+    });
+  } catch (error) {
+    console.error('Verify Profile Email Error:', error);
+    return res.status(500).json({ success: false, message: 'Error verifying email address' });
+  }
+};
+
+// @desc    Admin: Update volunteer/user verification badge status
+// @route   PATCH /api/auth/users/:id/verification
+// @access  Private (Admin)
+const updateUserVerificationStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (status) user.verificationBadgeStatus = status;
+    if (status === 'verified') user.accountStatus = 'active';
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Verification status updated to ${status}`,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Update Verification Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating verification status' });
+  }
+};
+
+// @desc    Admin: Delete user account
+// @route   DELETE /api/auth/users/:id
+// @access  Private (Admin)
+const deleteUserAccount = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
+
+    return res.status(200).json({
+      success: true,
+      message: `User account ${user.customId} deleted successfully`,
+    });
+  } catch (error) {
+    console.error('Delete User Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error deleting user' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
   getMe,
+  getAllUsers,
   uploadProfilePicture,
   deleteProfilePicture,
   updateUserProfile,
   forgotPassword,
   verifyResetOtp,
   resetPassword,
+  sendEmailVerificationOtp,
+  verifyProfileEmail,
+  updateUserVerificationStatus,
+  deleteUserAccount,
 };
