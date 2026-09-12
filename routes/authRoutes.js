@@ -14,8 +14,10 @@ const {
   resetPassword,
   sendEmailVerificationOtp,
   verifyProfileEmail,
+  updateUserVerificationStatus,
+  deleteUserAccount,
 } = require('../controllers/authController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
 
 // Public auth routes
@@ -24,7 +26,9 @@ router.post('/login', loginUser);
 
 // Protected user profile & list routes
 router.get('/me', protect, getMe);
-router.get('/users', protect, getAllUsers);
+router.get('/users', protect, authorize('admin'), getAllUsers);
+router.patch('/users/:id/verification', protect, authorize('admin'), updateUserVerificationStatus);
+router.delete('/users/:id', protect, authorize('admin'), deleteUserAccount);
 router.put('/profile', protect, updateUserProfile);
 
 // Email Verification Flow

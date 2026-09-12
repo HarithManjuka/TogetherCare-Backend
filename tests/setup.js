@@ -8,11 +8,7 @@ process.env.NODE_ENV = 'test';
 let mongoServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create({
-    binary: {
-      version: '6.0.5',
-    },
-  });
+  mongoServer = await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
   await mongoose.connect(uri);
 }, 300000);
