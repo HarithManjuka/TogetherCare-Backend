@@ -243,6 +243,55 @@ const loginUser = async (req, res) => {
       });
     }
 
+    // Ban Enforcement Check
+    if (user.isBanned) {
+      if (user.banType === 'permanent') {
+        const reasonStr = user.banReason ? ` Reason: ${user.banReason}` : '';
+        return res.status(403).json({
+          success: false,
+          isBanned: true,
+          banType: 'permanent',
+          message: `You are banned from TogetherCare Community permanently.${reasonStr}`,
+        });
+      }
+
+      if (user.banType === 'temporary') {
+        const now = new Date();
+        if (user.banExpiresAt && new Date(user.banExpiresAt) > now) {
+          const diffMs = new Date(user.banExpiresAt) - now;
+          const diffHours = diffMs / (1000 * 60 * 60);
+
+          let durationLabel = 'for 1 day';
+          if (diffHours > 24 * 7) {
+            durationLabel = 'for 1 month';
+          } else if (diffHours > 24) {
+            durationLabel = 'for 1 week';
+          }
+
+          const expiryStr = new Date(user.banExpiresAt).toLocaleString('en-US', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+          });
+          const reasonStr = user.banReason ? ` Reason: ${user.banReason}` : '';
+          return res.status(403).json({
+            success: false,
+            isBanned: true,
+            banType: 'temporary',
+            banExpiresAt: user.banExpiresAt,
+            message: `You are banned from TogetherCare Community ${durationLabel} (until ${expiryStr}).${reasonStr}`,
+          });
+        } else {
+          // Ban expired; auto-release
+          user.isBanned = false;
+          user.banType = 'none';
+          user.banExpiresAt = null;
+          user.bannedBy = null;
+          user.banReason = '';
+          await user.save();
+        }
+      }
+    }
+
     const token = generateToken(user._id, user.role, user.customId);
 
     return res.status(200).json({

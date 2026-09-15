@@ -28,13 +28,13 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, 'First name is required'],
       trim: true,
-      match: [/^[A-Za-z]+$/, 'First name can only contain letters'],
+      match: [/^[A-Za-z\s]+$/, 'First name can only contain letters'],
     },
     lastName: {
       type: String,
       required: [true, 'Last name is required'],
       trim: true,
-      match: [/^[A-Za-z]+$/, 'Last name can only contain letters'],
+      match: [/^[A-Za-z\s]+$/, 'Last name can only contain letters'],
     },
     email: {
       type: String,
@@ -97,7 +97,7 @@ const UserSchema = new mongoose.Schema(
     },
     accountStatus: {
       type: String,
-      enum: ['active', 'pending_verification', 'suspended'],
+      enum: ['active', 'pending_verification', 'suspended', 'deactivated'],
       default: 'pending_verification',
     },
     profilePicture: {
@@ -171,6 +171,30 @@ const UserSchema = new mongoose.Schema(
     relationshipToElderly: { type: String, default: '' },
     organizationName: { type: String, default: '' },
     linkedElderlyProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+
+    // Ban Management Attributes
+    isBanned: {
+      type: Boolean,
+      default: false,
+    },
+    banType: {
+      type: String,
+      enum: ['none', 'temporary', 'permanent'],
+      default: 'none',
+    },
+    banExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    bannedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    banReason: {
+      type: String,
+      default: '',
+    },
   },
   {
     timestamps: true,
