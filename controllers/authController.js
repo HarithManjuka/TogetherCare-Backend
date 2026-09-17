@@ -883,24 +883,15 @@ const verifyProfileEmail = async (req, res) => {
 
     user.isEmailVerified = true;
     user.accountStatus = 'active';
+    user.verificationBadgeStatus = 'verified';
     user.emailVerificationOtpHash = undefined;
     user.emailVerificationOtpExpires = undefined;
     await user.save();
 
     return res.status(200).json({
       success: true,
-      message: 'Email address successfully verified!',
-      user: {
-        _id: user._id,
-        customId: user.customId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-      },
+      message: 'Email address successfully verified! Your verified badge is now active.',
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Verify Profile Email Error:', error);

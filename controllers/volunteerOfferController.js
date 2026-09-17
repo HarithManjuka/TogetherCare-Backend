@@ -136,7 +136,7 @@ exports.getAllOffers = async (req, res) => {
     }
 
     const offers = await VolunteerOffer.find(query)
-      .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus age educationalInstitution bio rating address interests')
+      .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus isEmailVerified age educationalInstitution bio rating address interests')
       .sort({ date: 1, createdAt: -1 });
 
     res.status(200).json({
