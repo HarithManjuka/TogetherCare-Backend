@@ -128,14 +128,16 @@ exports.getAllOffers = async (req, res) => {
     const { service, location } = req.query;
     let query = { slotsLeft: { $gt: 0 }, status: { $in: ['pending', 'active'] } };
 
-    if (service) {
+    if (service && service !== 'All') {
       query.services = { $in: [service] };
     }
-    if (location) {
-      query.serviceArea = { $regex: location, $options: 'i' };
+    if (location && location.trim()) {
+      query.serviceArea = { $regex: location.trim(), $options: 'i' };
     }
 
-    const offers = await VolunteerOffer.find(query).sort({ date: 1, createdAt: -1 });
+    const offers = await VolunteerOffer.find(query)
+      .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus age educationalInstitution bio rating address interests')
+      .sort({ date: 1, createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -147,6 +149,73 @@ exports.getAllOffers = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fetching community offers',
+    });
+  }
+};
+
+// @desc    Accept a volunteer offer by an elderly user (creates scheduled companionship visit)
+// @route   POST /api/volunteer-offers/:id/accept
+// @access  Private (Elderly)
+exports.acceptOffer = async (req, res) => {
+  try {
+    const CompanionshipRequest = require('../models/CompanionshipRequest');
+    const offer = await VolunteerOffer.findById(req.params.id).populate('volunteerId', 'firstName lastName phone email');
+
+    if (!offer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Volunteer offer not found',
+      });
+    }
+
+    if (offer.slotsLeft <= 0 || offer.status === 'booked' || offer.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'This offer is no longer available or already fully booked',
+      });
+    }
+
+    // Decrement slots and update status if full
+    offer.slotsLeft = Math.max(0, offer.slotsLeft - 1);
+    if (offer.slotsLeft === 0) {
+      offer.status = 'booked';
+    }
+    await offer.save();
+
+    // Create corresponding accepted CompanionshipRequest
+    const primaryService = offer.services && offer.services.length > 0 ? offer.services[0] : 'Companionship';
+    const scheduledDateObj = offer.date ? new Date(offer.date) : new Date();
+
+    const companionship = await CompanionshipRequest.create({
+      elderly: req.user._id,
+      volunteer: offer.volunteerId._id || offer.volunteerId,
+      acceptedBy: offer.volunteerId._id || offer.volunteerId,
+      acceptedAt: new Date(),
+      companionName: offer.volunteerName || `${offer.volunteerId.firstName || 'Volunteer'} ${offer.volunteerId.lastName || ''}`.trim(),
+      activityType: primaryService,
+      scheduledDate: scheduledDateObj,
+      startTime: offer.startTime || '02:00 PM',
+      endTime: offer.endTime || '04:00 PM',
+      timeSlot: `${offer.startTime || '02:00 PM'} - ${offer.endTime || '04:00 PM'}`,
+      communicationMethod: 'in_person',
+      location: offer.serviceArea || 'Local Area',
+      notes: `Accepted from Volunteer Offer. Services: ${offer.services.join(', ')}. ${offer.specialSkills ? `Note: ${offer.specialSkills}` : ''}`.trim(),
+      status: 'accepted',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Volunteer offer accepted and added to your schedule!',
+      data: {
+        companionship,
+        offer,
+      },
+    });
+  } catch (error) {
+    console.error('Accept Offer Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error while accepting volunteer offer',
     });
   }
 };
