@@ -44,6 +44,7 @@ app.use('/api/activities', require('./routes/activityRoutes'));
 app.use('/api/volunteer-offers', require('./routes/volunteerOfferRoutes'));
 app.use('/api/caregiver/dependents', require('./routes/dependentsRoutes'));
 app.use('/api/help-requests', require('./routes/helpRequestRoutes'));
+app.use('/api/emergency', require('./routes/emergencyRoutes'));
 app.use('/api/admin/users', require('./routes/adminUserRoutes'));
 
 // Health Check Route

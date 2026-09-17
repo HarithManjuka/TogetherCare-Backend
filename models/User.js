@@ -147,6 +147,16 @@ const UserSchema = new mongoose.Schema(
       relation: { type: String, default: '' },
       phone: { type: String, default: '' },
     },
+    careCircle: [
+      {
+        name: { type: String, required: true, trim: true },
+        relation: { type: String, default: 'Family Member', trim: true },
+        phone: { type: String, required: true, trim: true },
+        isPrimary: { type: Boolean, default: false },
+        notes: { type: String, default: '', trim: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     linkedCaregiverId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
