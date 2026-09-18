@@ -7,20 +7,34 @@ const {
   getAllOffers,
   updateOffer,
   deleteOffer,
-  acceptOffer,
+  getAvailableRequests,
+  acceptRequest,
+  getMySchedule,
+  updateTaskStatus,
+  getMyHistory,
+  getMyStats,
 } = require('../controllers/volunteerOfferController');
 const { protect } = require('../middleware/authMiddleware');
 
+// Community offers
 router.route('/')
   .post(protect, createOffer)
   .get(getAllOffers);
 
 router.get('/my-offers', protect, getMyOffers);
 
-router.post('/:id/accept', protect, acceptOffer);
+// Volunteer tasks & requests
+router.get('/available-requests', protect, getAvailableRequests);
+router.post('/requests/:id/accept', protect, acceptRequest);
+router.get('/my-schedule', protect, getMySchedule);
+router.put('/tasks/:id/status', protect, updateTaskStatus);
+router.get('/my-history', protect, getMyHistory);
+router.get('/my-stats', protect, getMyStats);
 
+// Offer operations by ID
 router.route('/:id')
   .put(protect, updateOffer)
   .delete(protect, deleteOffer);
 
 module.exports = router;
+
