@@ -150,7 +150,7 @@ const UserSchema = new mongoose.Schema(
     careCircle: [
       {
         name: { type: String, required: true, trim: true },
-        relation: { type: String, default: 'Family Member', trim: true },
+        relation: { type: String, required: true, trim: true, default: 'Family Member' },
         phone: { type: String, required: true, trim: true },
         isPrimary: { type: Boolean, default: false },
         notes: { type: String, default: '', trim: true },
