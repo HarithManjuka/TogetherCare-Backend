@@ -16,6 +16,8 @@ const {
   verifyProfileEmail,
   updateUserVerificationStatus,
   deleteUserAccount,
+  addCaregiverCertification,
+  deleteCaregiverCertification,
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
@@ -30,6 +32,8 @@ router.get('/users', protect, authorize('admin'), getAllUsers);
 router.patch('/users/:id/verification', protect, authorize('admin'), updateUserVerificationStatus);
 router.delete('/users/:id', protect, authorize('admin'), deleteUserAccount);
 router.put('/profile', protect, updateUserProfile);
+router.post('/certifications', protect, addCaregiverCertification);
+router.delete('/certifications/:id', protect, deleteCaregiverCertification);
 
 // Email Verification Flow
 router.post('/send-email-verification-otp', protect, sendEmailVerificationOtp);

@@ -1,6 +1,7 @@
 // controllers/emergencyController.js
 const EmergencyAlert = require('../models/EmergencyAlert');
 const User = require('../models/User');
+const { createNotification } = require('./notificationController');
 
 // @desc    Trigger emergency SOS alert
 // @route   POST /api/emergency/sos
@@ -34,8 +35,10 @@ exports.triggerSOS = async (req, res) => {
       user: userId,
       emergencyType: emergencyType || 'general',
       status: 'active',
-      location: location || user.address || '',
-      coordinates: coordinates || {},
+      location: typeof location === 'string'
+        ? location
+        : (location?.address || (typeof user.address === 'string' ? user.address : `${user.address?.streetAddress || ''}, ${user.address?.city || ''}`.trim())),
+      coordinates: coordinates || (location?.latitude ? { latitude: location.latitude, longitude: location.longitude } : {}),
       emergencyContact: {
         name: user.emergencyContact?.name || '',
         relation: user.emergencyContact?.relation || '',
@@ -44,6 +47,26 @@ exports.triggerSOS = async (req, res) => {
       linkedCaregiver: user.linkedCaregiverId || null,
       triggeredAt: new Date(),
     });
+
+    // Notify all linked family members / caregivers
+    const familyMembers = await User.find({
+      $or: [
+        { _id: user.linkedCaregiverId },
+        { linkedElderlyProfiles: userId },
+      ],
+    });
+
+    for (const fm of familyMembers) {
+      await createNotification({
+        recipient: fm._id,
+        sender: userId,
+        senior: userId,
+        type: 'sos_alert',
+        title: '🚨 EMERGENCY SOS ALERT!',
+        message: `${user.firstName} ${user.lastName || ''} has triggered an Emergency SOS! Immediate attention required.`,
+        data: { alertId: newAlert._id, location: newAlert.location },
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -74,8 +97,14 @@ exports.getActiveSOS = async (req, res) => {
     }).populate('user', 'firstName lastName phone address emergencyContact');
 
     if (!alert && req.user.role === 'caregiver') {
+      const caregiver = await User.findById(userId);
+      const seniorIds = caregiver?.linkedElderlyProfiles || [];
+
       alert = await EmergencyAlert.findOne({
-        linkedCaregiver: userId,
+        $or: [
+          { linkedCaregiver: userId },
+          { user: { $in: seniorIds } },
+        ],
         status: 'active',
       }).populate('user', 'firstName lastName phone address emergencyContact');
     }

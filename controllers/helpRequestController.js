@@ -1,7 +1,9 @@
 // controllers/helpRequestController.js
 const HelpRequest = require('../models/HelpRequest');
 const VolunteerOffer = require('../models/VolunteerOffer');
+const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
+const { createNotification } = require('./notificationController');
 
 // Helper to calculate rating for a volunteer
 const getVolunteerDetails = async (volunteerId) => {
@@ -52,52 +54,24 @@ const getMatchingVolunteers = async (serviceType, date, location, rejectedVolunt
     offers = offers.filter(offer => !rejectedStrings.includes(offer.volunteerId.toString()));
   }
 
+  // If no specific offers found, query actual registered active volunteers
   if (offers.length === 0) {
-    let volunteers = await User.find({ role: 'volunteer' });
+    let query = { role: 'volunteer', accountStatus: 'active' };
     if (rejectedVolunteers && rejectedVolunteers.length > 0) {
-      const rejectedStrings = rejectedVolunteers.map(id => id.toString());
-      volunteers = volunteers.filter(v => !rejectedStrings.includes(v._id.toString()));
+      query._id = { $nin: rejectedVolunteers };
     }
-    volunteers = volunteers.slice(0, 2);
-
-    if (volunteers.length === 0) {
-      const { generateHumanReadableId } = require('../utils/customIdGenerator');
-      const customId = await generateHumanReadableId('volunteer');
-      const v = await User.create({
-        customId,
-        firstName: `Volunteer_${Math.floor(Math.random() * 100)}`,
-        lastName: 'Helper',
-        email: `helper.volunteer.${Math.floor(Math.random() * 1000)}@togethercare.com`,
-        password: 'volunteer123',
-        phone: '0773214567',
-        role: 'volunteer',
-        dateOfBirth: new Date('1999-07-20'),
-        address: { streetAddress: 'No 7, Main St', city: location, postalCode: '20000', district: 'Kandy', province: 'Central' },
-        accountStatus: 'active',
-        verificationBadgeStatus: 'verified',
-      });
-      volunteers.push(v);
+    const realVolunteers = await User.find(query).limit(5);
+    const matches = [];
+    for (let vol of realVolunteers) {
+      const details = await getVolunteerDetails(vol._id);
+      if (details) {
+        matches.push({
+          volunteer: details,
+          offerId: null,
+        });
+      }
     }
-
-    for (let i = 0; i < volunteers.length; i++) {
-      const vol = volunteers[i];
-      const volunteerName = `${vol.firstName} ${vol.lastName || ''}`.trim();
-      const mockOffer = await VolunteerOffer.create({
-        volunteerId: vol._id,
-        volunteerName,
-        services: [serviceType],
-        date,
-        startTime: i === 0 ? '08:00 AM' : '01:00 PM',
-        endTime: i === 0 ? '01:00 PM' : '06:00 PM',
-        serviceArea: location,
-        radius: 'Within 10 km',
-        capacity: 3,
-        slotsLeft: 3,
-        specialSkills: i === 0 ? 'Trained first-aider' : 'Speaks English & Sinhala fluently',
-        status: 'active',
-      });
-      offers.push(mockOffer);
-    }
+    return matches;
   }
 
   const matches = [];
@@ -471,5 +445,323 @@ exports.simulateStatus = async (req, res) => {
   } catch (error) {
     console.error('Simulate Status Error:', error);
     res.status(500).json({ success: false, message: 'Server error during simulation' });
+  }
+};
+
+// Helper to convert time strings like "10:00 AM", "02:30 PM" to minutes of the day
+const parseTimeToMinutes = (timeStr) => {
+  if (!timeStr) return 0;
+  const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+  if (!match) return 0;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const meridian = (match[3] || '').toUpperCase();
+  if (meridian === 'PM' && hours < 12) hours += 12;
+  if (meridian === 'AM' && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+};
+
+// @desc    Get available care assignments for caregivers (Sprint 3)
+// @route   GET /api/help-requests/caregiver/assignments
+// @access  Private (Caregiver)
+exports.getAvailableAssignments = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    const userDistrict = user?.address?.district;
+
+    // 1. Available HelpRequests
+    const helpRequests = await HelpRequest.find({
+      status: 'searching',
+      caregiverId: { $ne: req.user._id }, // Don't list requests created by this user
+    })
+      .populate('elderlyId', 'firstName lastName customId phone address')
+      .populate('caregiverId', 'firstName lastName phone customId')
+      .sort({ createdAt: -1 });
+
+    // 2. Available CompanionshipRequests
+    const companionshipRequests = await CompanionshipRequest.find({
+      status: 'pending',
+      elderly: { $ne: req.user._id },
+    })
+      .populate('elderly', 'firstName lastName customId phone address')
+      .populate('activityId', 'name icon iconFamily')
+      .sort({ createdAt: -1 });
+
+    // Format into unified assignments
+    const assignments = [
+      ...helpRequests.map((hr) => ({
+        id: hr._id,
+        _id: hr._id,
+        type: 'help_request',
+        serviceType: hr.serviceType,
+        date: hr.date,
+        time: hr.time,
+        location: hr.location,
+        status: hr.status,
+        senior: hr.elderlyId,
+        familyContact: hr.caregiverId,
+        createdAt: hr.createdAt,
+      })),
+      ...companionshipRequests.map((cr) => ({
+        id: cr._id,
+        _id: cr._id,
+        type: 'companionship',
+        serviceType: cr.activityType || 'Companionship',
+        date: cr.scheduledDate ? new Date(cr.scheduledDate).toISOString().split('T')[0] : '',
+        time: cr.startTime || cr.timeSlot || '02:00 PM',
+        location: cr.location || cr.elderly?.address?.streetAddress || '',
+        status: cr.status,
+        senior: cr.elderly,
+        activity: cr.activityId,
+        createdAt: cr.createdAt,
+      })),
+    ];
+
+    res.status(200).json({
+      success: true,
+      count: assignments.length,
+      data: assignments,
+    });
+  } catch (error) {
+    console.error('Get Available Assignments Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching available assignments',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Accept care assignment with Schedule Conflict Prevention (US-402)
+// @route   POST /api/help-requests/caregiver/assignments/:id/accept
+// @access  Private (Caregiver)
+exports.acceptCaregiverAssignment = async (req, res) => {
+  try {
+    const assignmentId = req.params.id;
+    const { assignmentType } = req.body; // 'help_request' or 'companionship'
+    const caregiverId = req.user._id;
+
+    let targetDate = '';
+    let targetTime = '';
+    let targetSenior = null;
+    let targetFamilyMember = null;
+    let assignmentDoc = null;
+
+    if (assignmentType === 'companionship') {
+      assignmentDoc = await CompanionshipRequest.findById(assignmentId).populate('elderly');
+      if (!assignmentDoc) {
+        return res.status(404).json({ success: false, message: 'Companionship request not found' });
+      }
+      if (assignmentDoc.status !== 'pending') {
+        return res.status(400).json({ success: false, message: 'This assignment is no longer available' });
+      }
+      targetDate = assignmentDoc.scheduledDate ? new Date(assignmentDoc.scheduledDate).toISOString().split('T')[0] : '';
+      targetTime = assignmentDoc.startTime || assignmentDoc.timeSlot || '02:00 PM';
+      targetSenior = assignmentDoc.elderly;
+      targetFamilyMember = assignmentDoc.elderly?.linkedCaregiverId;
+    } else {
+      // Default to help_request
+      assignmentDoc = await HelpRequest.findById(assignmentId).populate('elderlyId');
+      if (!assignmentDoc) {
+        return res.status(404).json({ success: false, message: 'Help request not found' });
+      }
+      if (assignmentDoc.status !== 'searching' && assignmentDoc.status !== 'matched') {
+        return res.status(400).json({ success: false, message: 'This assignment is no longer available' });
+      }
+      targetDate = assignmentDoc.date;
+      targetTime = assignmentDoc.time;
+      targetSenior = assignmentDoc.elderlyId;
+      targetFamilyMember = assignmentDoc.caregiverId;
+    }
+
+    const proposedMinutes = parseTimeToMinutes(targetTime);
+
+    // US-402: Check for caregiver schedule conflicts on the same date
+    // Check existing HelpRequests
+    const existingHelpRequests = await HelpRequest.find({
+      volunteerId: caregiverId,
+      date: targetDate,
+      status: { $in: ['confirmed', 'arrived'] },
+    }).populate('elderlyId', 'firstName lastName');
+
+    for (const hr of existingHelpRequests) {
+      const existingMinutes = parseTimeToMinutes(hr.time);
+      // Conflict if visits are within 90 minutes of each other
+      if (Math.abs(existingMinutes - proposedMinutes) < 90) {
+        return res.status(409).json({
+          success: false,
+          conflict: true,
+          message: `Schedule conflict detected! You already have an active visit for ${hr.elderlyId?.firstName || 'a senior'} at ${hr.time} on ${targetDate}.`,
+          conflictingVisit: {
+            id: hr._id,
+            type: 'help_request',
+            serviceType: hr.serviceType,
+            date: hr.date,
+            time: hr.time,
+            senior: hr.elderlyId,
+          },
+        });
+      }
+    }
+
+    // Check existing CompanionshipRequests
+    const existingCompanionship = await CompanionshipRequest.find({
+      volunteer: caregiverId,
+      status: { $in: ['accepted', 'ongoing'] },
+    }).populate('elderly', 'firstName lastName');
+
+    for (const cr of existingCompanionship) {
+      const crDate = cr.scheduledDate ? new Date(cr.scheduledDate).toISOString().split('T')[0] : '';
+      if (crDate === targetDate) {
+        const existingMinutes = parseTimeToMinutes(cr.startTime || cr.timeSlot);
+        if (Math.abs(existingMinutes - proposedMinutes) < 90) {
+          return res.status(409).json({
+            success: false,
+            conflict: true,
+            message: `Schedule conflict detected! You already have an accepted companionship session for ${cr.elderly?.firstName || 'a senior'} at ${cr.startTime || cr.timeSlot} on ${targetDate}.`,
+            conflictingVisit: {
+              id: cr._id,
+              type: 'companionship',
+              serviceType: cr.activityType,
+              date: crDate,
+              time: cr.startTime || cr.timeSlot,
+              senior: cr.elderly,
+            },
+          });
+        }
+      }
+    }
+
+    // No conflict: Assign caregiver
+    if (assignmentType === 'companionship') {
+      assignmentDoc.volunteer = caregiverId;
+      assignmentDoc.acceptedBy = caregiverId;
+      assignmentDoc.acceptedAt = new Date();
+      assignmentDoc.companionName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+      assignmentDoc.status = 'accepted';
+      await assignmentDoc.save();
+    } else {
+      assignmentDoc.volunteerId = caregiverId;
+      assignmentDoc.status = 'confirmed';
+      assignmentDoc.autoApproved = false;
+      await assignmentDoc.save();
+    }
+
+    // Send notifications to senior and family member
+    const caregiverName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    if (targetSenior?._id) {
+      await createNotification({
+        recipient: targetSenior._id,
+        sender: caregiverId,
+        senior: targetSenior._id,
+        type: 'visit_approved',
+        title: 'Caregiver Assigned! 🎉',
+        message: `${caregiverName} has accepted your care visit for ${targetDate} at ${targetTime}.`,
+        data: { assignmentId, date: targetDate, time: targetTime },
+      });
+    }
+
+    if (targetFamilyMember) {
+      await createNotification({
+        recipient: targetFamilyMember,
+        sender: caregiverId,
+        senior: targetSenior?._id || null,
+        type: 'visit_approved',
+        title: 'Care Visit Confirmed 📅',
+        message: `${caregiverName} accepted the care assignment for ${targetSenior?.firstName || 'your senior'} on ${targetDate} at ${targetTime}.`,
+        data: { assignmentId, date: targetDate, time: targetTime },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Assignment accepted successfully with no schedule conflicts.',
+      data: assignmentDoc,
+    });
+  } catch (error) {
+    console.error('Accept Assignment Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while accepting assignment',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get completed visits for caregiver (Sprint 3)
+// @route   GET /api/help-requests/caregiver/visits/completed
+// @access  Private (Caregiver)
+exports.getCompletedCaregiverVisits = async (req, res) => {
+  try {
+    const caregiverId = req.user._id;
+
+    // 1. Completed HelpRequests
+    const helpRequests = await HelpRequest.find({
+      volunteerId: caregiverId,
+      status: 'completed',
+    })
+      .populate('elderlyId', 'firstName lastName customId phone address')
+      .sort({ completedAt: -1, createdAt: -1 });
+
+    // 2. Completed CompanionshipRequests
+    const companionshipRequests = await CompanionshipRequest.find({
+      volunteer: caregiverId,
+      status: 'completed',
+    })
+      .populate('elderly', 'firstName lastName customId phone address')
+      .populate('activityId', 'name icon iconFamily')
+      .sort({ scheduledDate: -1 });
+
+    const completedVisits = [
+      ...helpRequests.map((hr) => ({
+        id: hr._id,
+        type: 'help_request',
+        serviceType: hr.serviceType,
+        date: hr.date,
+        time: hr.time,
+        location: hr.location,
+        status: 'completed',
+        senior: hr.elderlyId,
+        rating: hr.rating || 5,
+        feedback: hr.feedback || '',
+        completedAt: hr.completedAt || hr.updatedAt,
+      })),
+      ...companionshipRequests.map((cr) => ({
+        id: cr._id,
+        type: 'companionship',
+        serviceType: cr.activityType || 'Companionship',
+        date: cr.scheduledDate ? new Date(cr.scheduledDate).toISOString().split('T')[0] : '',
+        time: cr.startTime || cr.timeSlot || '02:00 PM',
+        location: cr.location || cr.elderly?.address?.streetAddress || '',
+        status: 'completed',
+        senior: cr.elderly,
+        rating: 5,
+        feedback: 'Great companionship session',
+        completedAt: cr.updatedAt,
+      })),
+    ];
+
+    const totalHours = completedVisits.length * 2; // Each visit averages 2 hours
+    const avgRating = completedVisits.length > 0
+      ? (completedVisits.reduce((acc, v) => acc + (v.rating || 5), 0) / completedVisits.length).toFixed(1)
+      : '5.0';
+
+    res.status(200).json({
+      success: true,
+      count: completedVisits.length,
+      stats: {
+        totalVisits: completedVisits.length,
+        totalHours,
+        averageRating: parseFloat(avgRating),
+      },
+      data: completedVisits,
+    });
+  } catch (error) {
+    console.error('Get Completed Visits Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching completed visits',
+      error: error.message,
+    });
   }
 };

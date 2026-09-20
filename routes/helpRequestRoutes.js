@@ -10,10 +10,18 @@ const {
   triggerSOS,
   submitFeedback,
   simulateStatus,
+  getAvailableAssignments,
+  acceptCaregiverAssignment,
+  getCompletedCaregiverVisits,
 } = require('../controllers/helpRequestController');
 const { protect } = require('../middleware/authMiddleware');
 
 router.use(protect);
+
+// Caregiver Assignment & Visit tracking routes (Sprint 3 & US-402)
+router.get('/caregiver/assignments', getAvailableAssignments);
+router.post('/caregiver/assignments/:id/accept', acceptCaregiverAssignment);
+router.get('/caregiver/visits/completed', getCompletedCaregiverVisits);
 
 router.route('/')
   .post(createHelpRequest)
