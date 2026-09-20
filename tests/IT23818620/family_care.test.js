@@ -178,10 +178,10 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
   });
 
   // ==========================================
-  // SPRINT 1 & 2: Dependent Management (Multi-Senior Linking & Unlinking)
+  // SPRINT 1 & 2: Dependent Management (Elderly Permission Handshake & Multi-Senior Linking)
   // ==========================================
-  describe('Sprint 1 & 2: Dependent Management & Multi-Senior Linking', () => {
-    it('should link senior 1 to family member account', async () => {
+  describe('Sprint 1 & 2: Dependent Management & Elderly Permission Handshake', () => {
+    it('should send link request to senior 1 and return pending_approval status', async () => {
       const linkRes = await request(app)
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
@@ -192,21 +192,114 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
 
       expect(linkRes.statusCode).toBe(200);
       expect(linkRes.body.success).toBe(true);
-      expect(linkRes.body.data.linkedCaregiverId.toString()).toBe(familyMemberUser._id.toString());
+      expect(linkRes.body.status).toBe('pending_approval');
+      expect(linkRes.body.message).toContain('Awaiting senior approval');
+
+      // Check senior received link_request notification
+      const seniorNotifs = await Notification.find({ recipient: seniorUser1._id, type: 'link_request' });
+      expect(seniorNotifs.length).toBeGreaterThan(0);
+      expect(seniorNotifs[0].title).toContain('Link Request');
     });
 
-    it('should support linking multiple seniors under a single family member account', async () => {
+    it('should allow senior to accept link request, linking accounts and notifying both parties', async () => {
+      // 1. Caregiver sends link request
+      await request(app)
+        .post('/api/dependents/link')
+        .set('Authorization', `Bearer ${familyMemberToken}`)
+        .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+
+      // 2. Senior accepts link request
+      const respondRes = await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({
+          caregiverId: familyMemberUser._id,
+          action: 'accept',
+        });
+
+      expect(respondRes.statusCode).toBe(200);
+      expect(respondRes.body.success).toBe(true);
+      expect(respondRes.body.action).toBe('accepted');
+
+      // 3. Verify senior profile now has linkedCaregiverId
+      const updatedSenior = await User.findById(seniorUser1._id);
+      expect(updatedSenior.linkedCaregiverId.toString()).toBe(familyMemberUser._id.toString());
+      expect(updatedSenior.pendingCaregiverRequests).toHaveLength(0);
+
+      // 4. Verify caregiver profile has senior in linkedElderlyProfiles
+      const updatedCaregiver = await User.findById(familyMemberUser._id);
+      expect(updatedCaregiver.linkedElderlyProfiles.map((id) => id.toString())).toContain(seniorUser1._id.toString());
+
+      // 5. Verify dual notifications were dispatched
+      const caregiverNotif = await Notification.findOne({
+        recipient: familyMemberUser._id,
+        type: 'link_approved',
+      });
+      expect(caregiverNotif).not.toBeNull();
+      expect(caregiverNotif.title).toContain('Accepted');
+
+      const seniorNotif = await Notification.findOne({
+        recipient: seniorUser1._id,
+        type: 'link_approved',
+      });
+      expect(seniorNotif).not.toBeNull();
+      expect(seniorNotif.title).toContain('Connected');
+    });
+
+    it('should allow senior to decline link request, notifying caregiver without linking', async () => {
+      // 1. Caregiver sends link request to senior 2
+      await request(app)
+        .post('/api/dependents/link')
+        .set('Authorization', `Bearer ${familyMemberToken}`)
+        .send({ seniorId: seniorUser2._id, relationship: 'Mother' });
+
+      // 2. Senior 2 declines link request
+      const declineRes = await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken2}`)
+        .send({
+          caregiverId: familyMemberUser._id,
+          action: 'reject',
+        });
+
+      expect(declineRes.statusCode).toBe(200);
+      expect(declineRes.body.success).toBe(true);
+      expect(declineRes.body.action).toBe('rejected');
+
+      // 3. Verify senior 2 is NOT linked
+      const seniorDoc = await User.findById(seniorUser2._id);
+      expect(seniorDoc.linkedCaregiverId).toBeNull();
+      expect(seniorDoc.pendingCaregiverRequests).toHaveLength(0);
+
+      // 4. Verify caregiver received decline notification
+      const declineNotif = await Notification.findOne({
+        recipient: familyMemberUser._id,
+        type: 'link_rejected',
+      });
+      expect(declineNotif).not.toBeNull();
+      expect(declineNotif.title).toContain('Declined');
+    });
+
+    it('should support linking multiple seniors under a single family member account with senior approvals', async () => {
       // Link Senior 1 (Father)
       await request(app)
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
 
       // Link Senior 2 (Mother)
       await request(app)
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser2._id, relationship: 'Mother' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken2}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
 
       // Fetch all dependents
       const getRes = await request(app)
@@ -221,11 +314,16 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
       expect(names).toContain('Sita');
     });
 
-    it('should allow family member to unlink a senior dependent', async () => {
+    it('should allow family member or senior to unlink an elderly dependent', async () => {
+      // Link Senior 1
       await request(app)
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
 
       const unlinkRes = await request(app)
         .post('/api/dependents/unlink')
@@ -248,11 +346,15 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
   // ==========================================
   describe('Sprint 2: SOS Alerts & Family Notifications', () => {
     beforeEach(async () => {
-      // Link senior 1 to family member
+      // Link senior 1 to family member with permission
       await request(app)
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
     });
 
     it('should trigger SOS from senior and dispatch emergency notification to linked family member', async () => {
@@ -321,6 +423,10 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
 
       // Create a help request for Senior 1
       helpRequest = await HelpRequest.create({
@@ -546,6 +652,10 @@ describe('IT23818620: Family Member & Caregiver Integration Test Suite', () => {
         .post('/api/dependents/link')
         .set('Authorization', `Bearer ${familyMemberToken}`)
         .send({ seniorId: seniorUser1._id, relationship: 'Father' });
+      await request(app)
+        .post('/api/dependents/respond-link')
+        .set('Authorization', `Bearer ${seniorToken1}`)
+        .send({ caregiverId: familyMemberUser._id, action: 'accept' });
 
       // Create an upcoming confirmed care visit
       await HelpRequest.create({

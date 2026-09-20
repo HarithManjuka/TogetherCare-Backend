@@ -3,6 +3,7 @@ const User = require('../models/User');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const HelpRequest = require('../models/HelpRequest');
 const { generateHumanReadableId } = require('../utils/customIdGenerator');
+const { createNotification } = require('./notificationController');
 
 // @desc    Get all linked dependents for logged-in caregiver
 // @route   GET /api/caregiver/dependents
@@ -136,12 +137,13 @@ exports.getUnlinkedElderly = async (req, res) => {
   }
 };
 
-// @desc    Link an existing elderly user to caregiver
-// @route   POST /api/caregiver/dependents/link
+// @desc    Request to link an existing elderly user to caregiver (Requires Elderly Approval)
+// @route   POST /api/caregiver/dependents/request-link (or /link)
 // @access  Private (Caregiver)
-exports.linkDependent = async (req, res) => {
+exports.requestLink = async (req, res) => {
   try {
     const elderlyId = req.body.elderlyId || req.body.seniorId;
+    const relationship = req.body.relationship || req.user.relationshipToElderly || 'Family Member';
 
     if (!elderlyId) {
       return res.status(400).json({
@@ -166,41 +168,295 @@ exports.linkDependent = async (req, res) => {
     }
 
     if (elderly.linkedCaregiverId) {
+      if (elderly.linkedCaregiverId.toString() === req.user._id.toString()) {
+        return res.status(400).json({
+          success: false,
+          message: 'You are already linked to this elderly person',
+        });
+      }
       return res.status(400).json({
         success: false,
         message: 'Selected elderly profile is already linked to another caregiver',
       });
     }
 
-    // Link elderly to caregiver
-    elderly.linkedCaregiverId = req.user._id;
+    // Initialize pendingCaregiverRequests array if undefined
+    if (!elderly.pendingCaregiverRequests) {
+      elderly.pendingCaregiverRequests = [];
+    }
+
+    const alreadyPending = elderly.pendingCaregiverRequests.some(
+      (r) => r.caregiver && r.caregiver.toString() === req.user._id.toString()
+    );
+    if (alreadyPending) {
+      return res.status(400).json({
+        success: false,
+        message: 'A link request has already been sent to this senior and is awaiting approval',
+      });
+    }
+
+    // Add to pending requests
+    elderly.pendingCaregiverRequests.push({
+      caregiver: req.user._id,
+      relationship,
+      requestedAt: new Date(),
+    });
     await elderly.save();
 
-    // Link caregiver to elderly
-    await User.findByIdAndUpdate(req.user._id, {
-      $push: { linkedElderlyProfiles: elderly._id },
+    // Create high-priority notification for the elderly user
+    await createNotification({
+      recipient: elderly._id,
+      sender: req.user._id,
+      senior: elderly._id,
+      type: 'link_request',
+      title: 'Family Caregiver Link Request',
+      message: `${req.user.firstName} ${req.user.lastName} (${relationship}) has requested to link with your account as your family caregiver.`,
+      data: {
+        caregiverId: req.user._id,
+        caregiverName: `${req.user.firstName} ${req.user.lastName}`,
+        relationship,
+        phone: req.user.phone,
+      },
     });
 
     res.status(200).json({
       success: true,
-      message: 'Elderly profile linked successfully',
-      data: elderly,
+      message: `Link request sent to ${elderly.firstName} ${elderly.lastName}. Awaiting senior approval.`,
+      status: 'pending_approval',
+      data: {
+        seniorId: elderly._id,
+        seniorName: `${elderly.firstName} ${elderly.lastName}`,
+        status: 'pending_approval',
+      },
     });
   } catch (error) {
-    console.error('Link Dependent Error:', error);
+    console.error('Request Link Error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error while linking profile',
+      message: 'Server error while requesting profile link',
     });
   }
 };
 
-// @desc    Unlink an elderly dependent from logged-in caregiver
+// Backwards-compatible alias for existing endpoints
+exports.linkDependent = exports.requestLink;
+
+// @desc    Elderly person accepts or declines a caregiver link request
+// @route   POST /api/caregiver/dependents/respond-link
+// @access  Private (Elderly, Caregiver, Admin)
+exports.respondLink = async (req, res) => {
+  try {
+    const { caregiverId, action } = req.body;
+    const seniorId = req.user.role === 'elderly' ? req.user._id : (req.body.seniorId || req.body.elderlyId);
+
+    if (!caregiverId || !action) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide caregiverId and action (accept or reject)',
+      });
+    }
+
+    if (!['accept', 'reject', 'approve', 'decline'].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid action. Must be accept or reject.',
+      });
+    }
+
+    const isAccept = action === 'accept' || action === 'approve';
+
+    const elderly = await User.findById(seniorId);
+    if (!elderly) {
+      return res.status(404).json({
+        success: false,
+        message: 'Elderly profile not found',
+      });
+    }
+
+    const caregiver = await User.findById(caregiverId);
+    if (!caregiver) {
+      return res.status(404).json({
+        success: false,
+        message: 'Caregiver profile not found',
+      });
+    }
+
+    // Find the pending request to get relationship if specified
+    const pendingReq = elderly.pendingCaregiverRequests?.find(
+      (r) => r.caregiver && r.caregiver.toString() === caregiverId.toString()
+    );
+    const relationship = pendingReq?.relationship || caregiver.relationshipToElderly || 'Family Member';
+
+    // Remove the request from elderly's pending requests
+    elderly.pendingCaregiverRequests = (elderly.pendingCaregiverRequests || []).filter(
+      (r) => r.caregiver && r.caregiver.toString() !== caregiverId.toString()
+    );
+
+    if (isAccept) {
+      // Link elderly to caregiver
+      elderly.linkedCaregiverId = caregiver._id;
+      await elderly.save();
+
+      // Link caregiver to elderly
+      if (!caregiver.linkedElderlyProfiles) {
+        caregiver.linkedElderlyProfiles = [];
+      }
+      if (!caregiver.linkedElderlyProfiles.some((id) => id.toString() === elderly._id.toString())) {
+        caregiver.linkedElderlyProfiles.push(elderly._id);
+        await caregiver.save();
+      }
+
+      // Notify Caregiver
+      await createNotification({
+        recipient: caregiver._id,
+        sender: elderly._id,
+        senior: elderly._id,
+        type: 'link_approved',
+        title: 'Senior Link Request Accepted 🎉',
+        message: `${elderly.firstName} ${elderly.lastName} accepted your link request. You are now linked to oversee their care.`,
+        data: {
+          seniorId: elderly._id,
+          seniorName: `${elderly.firstName} ${elderly.lastName}`,
+          customId: elderly.customId,
+        },
+      });
+
+      // Notify Elderly
+      await createNotification({
+        recipient: elderly._id,
+        sender: caregiver._id,
+        senior: elderly._id,
+        type: 'link_approved',
+        title: 'Family Caretaker Connected',
+        message: `You are now linked with ${caregiver.firstName} ${caregiver.lastName} (${relationship}). They will help oversee your care.`,
+        data: {
+          caregiverId: caregiver._id,
+          caregiverName: `${caregiver.firstName} ${caregiver.lastName}`,
+          relationship,
+          phone: caregiver.phone,
+        },
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: `Successfully linked with ${caregiver.firstName} ${caregiver.lastName}`,
+        action: 'accepted',
+        data: {
+          linkedCaregiverId: caregiver._id,
+          caregiver: {
+            _id: caregiver._id,
+            firstName: caregiver.firstName,
+            lastName: caregiver.lastName,
+            phone: caregiver.phone,
+            email: caregiver.email,
+            relationship,
+            caregiverType: caregiver.caregiverType,
+          },
+        },
+      });
+    } else {
+      // Declined
+      await elderly.save();
+
+      // Notify Caregiver
+      await createNotification({
+        recipient: caregiver._id,
+        sender: elderly._id,
+        senior: elderly._id,
+        type: 'link_rejected',
+        title: 'Link Request Declined',
+        message: `${elderly.firstName} ${elderly.lastName} declined your caregiver link request.`,
+        data: {
+          seniorId: elderly._id,
+          seniorName: `${elderly.firstName} ${elderly.lastName}`,
+        },
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: `Link request from ${caregiver.firstName} ${caregiver.lastName} was declined`,
+        action: 'rejected',
+      });
+    }
+  } catch (error) {
+    console.error('Respond Link Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while responding to link request',
+    });
+  }
+};
+
+// @desc    Get pending link requests (for elderly: requests received; for caregiver: requests sent)
+// @route   GET /api/caregiver/dependents/pending-requests
+// @access  Private (Elderly, Caregiver, Admin)
+exports.getPendingRequests = async (req, res) => {
+  try {
+    if (req.user.role === 'elderly') {
+      const userDoc = await User.findById(req.user._id)
+        .populate('pendingCaregiverRequests.caregiver', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId');
+      return res.status(200).json({
+        success: true,
+        count: userDoc?.pendingCaregiverRequests?.length || 0,
+        data: userDoc?.pendingCaregiverRequests || [],
+      });
+    } else {
+      // Caregiver perspective: find elderly users who have a pending request from this caregiver
+      const pendingSeniors = await User.find({
+        'pendingCaregiverRequests.caregiver': req.user._id,
+        role: 'elderly',
+      }).select('firstName lastName customId phone address age pendingCaregiverRequests');
+
+      const formatted = pendingSeniors.map((senior) => {
+        const myReq = senior.pendingCaregiverRequests?.find(
+          (r) => r.caregiver && r.caregiver.toString() === req.user._id.toString()
+        );
+        return {
+          seniorId: senior._id,
+          _id: senior._id,
+          firstName: senior.firstName,
+          lastName: senior.lastName,
+          customId: senior.customId,
+          phone: senior.phone,
+          address: senior.address,
+          age: senior.age,
+          relationship: myReq?.relationship || 'Family Member',
+          requestedAt: myReq?.requestedAt,
+          status: 'pending_approval',
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+        count: formatted.length,
+        data: formatted,
+      });
+    }
+  } catch (error) {
+    console.error('Get Pending Requests Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching pending requests',
+    });
+  }
+};
+
+// @desc    Unlink an elderly dependent from logged-in caregiver or elderly unlinks caregiver
 // @route   POST /api/caregiver/dependents/unlink
-// @access  Private (Caregiver)
+// @access  Private (Caregiver, Elderly, Admin)
 exports.unlinkDependent = async (req, res) => {
   try {
-    const elderlyId = req.body.elderlyId || req.body.seniorId;
+    let elderlyId;
+    let caregiverId;
+
+    if (req.user.role === 'elderly') {
+      elderlyId = req.user._id;
+      const elderlyUser = await User.findById(elderlyId);
+      caregiverId = elderlyUser?.linkedCaregiverId;
+    } else {
+      elderlyId = req.body.elderlyId || req.body.seniorId;
+      caregiverId = req.user._id;
+    }
 
     if (!elderlyId) {
       return res.status(400).json({
@@ -217,16 +473,18 @@ exports.unlinkDependent = async (req, res) => {
       });
     }
 
+    const actualCaregiverId = caregiverId || elderly.linkedCaregiverId;
+
     // Unlink elderly
-    if (elderly.linkedCaregiverId && elderly.linkedCaregiverId.toString() === req.user._id.toString()) {
-      elderly.linkedCaregiverId = null;
-      await elderly.save();
-    }
+    elderly.linkedCaregiverId = null;
+    await elderly.save();
 
     // Remove from caregiver profile
-    await User.findByIdAndUpdate(req.user._id, {
-      $pull: { linkedElderlyProfiles: elderly._id },
-    });
+    if (actualCaregiverId) {
+      await User.findByIdAndUpdate(actualCaregiverId, {
+        $pull: { linkedElderlyProfiles: elderly._id },
+      });
+    }
 
     res.status(200).json({
       success: true,

@@ -314,7 +314,9 @@ const loginUser = async (req, res) => {
 // @access  Private
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id)
+      .populate('linkedCaregiverId', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId')
+      .populate('pendingCaregiverRequests.caregiver', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }

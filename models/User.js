@@ -162,6 +162,24 @@ const UserSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    pendingCaregiverRequests: [
+      {
+        caregiver: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        relationship: {
+          type: String,
+          trim: true,
+          default: 'Family Member',
+        },
+        requestedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
 
     // Volunteer specific
     volunteerIdType: {
