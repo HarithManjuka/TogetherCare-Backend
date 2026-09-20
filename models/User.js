@@ -181,6 +181,27 @@ const UserSchema = new mongoose.Schema(
     relationshipToElderly: { type: String, default: '' },
     organizationName: { type: String, default: '' },
     linkedElderlyProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    certifications: [
+      {
+        title: { type: String, required: true, trim: true },
+        issuingOrganization: { type: String, required: true, trim: true },
+        issueDate: { type: Date, default: null },
+        expiryDate: { type: Date, default: null },
+        certificateNumber: { type: String, trim: true, default: '' },
+        verificationStatus: {
+          type: String,
+          enum: ['unverified', 'pending', 'verified', 'rejected'],
+          default: 'unverified',
+        },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    qualifications: [{ type: String, trim: true }],
+    yearsOfExperience: { type: Number, default: 0 },
+    specializations: [{ type: String, trim: true }],
+    caregiverBio: { type: String, trim: true, default: '' },
+    hourlyRate: { type: Number, default: 0 },
+    availableDays: [{ type: String, trim: true }],
 
     // Ban Management Attributes
     isBanned: {

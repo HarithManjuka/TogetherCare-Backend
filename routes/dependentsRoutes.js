@@ -6,6 +6,9 @@ const {
   addDependent,
   getUnlinkedElderly,
   linkDependent,
+  unlinkDependent,
+  getDependentActivities,
+  getUpcomingCareVisits,
 } = require('../controllers/dependentsController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -14,6 +17,9 @@ router.use(authorize('caregiver', 'admin'));
 
 router.get('/unlinked', getUnlinkedElderly);
 router.post('/link', linkDependent);
+router.post('/unlink', unlinkDependent);
+router.get('/upcoming-visits', getUpcomingCareVisits);
+router.get('/:id/activities', getDependentActivities);
 
 router.route('/')
   .get(getDependents)

@@ -504,6 +504,12 @@ const updateUserProfile = async (req, res) => {
       volunteerIdType,
       volunteerIdNumber,
       educationalInstitution,
+      qualifications,
+      yearsOfExperience,
+      specializations,
+      caregiverBio,
+      hourlyRate,
+      availableDays,
     } = req.body;
 
     if (firstName !== undefined) {
@@ -624,6 +630,26 @@ const updateUserProfile = async (req, res) => {
       user.educationalInstitution = String(educationalInstitution).trim();
     }
 
+    // Caregiver professional profile attributes
+    if (qualifications !== undefined && Array.isArray(qualifications)) {
+      user.qualifications = qualifications.map((q) => String(q).trim()).filter(Boolean);
+    }
+    if (yearsOfExperience !== undefined) {
+      user.yearsOfExperience = Math.max(0, Number(yearsOfExperience) || 0);
+    }
+    if (specializations !== undefined && Array.isArray(specializations)) {
+      user.specializations = specializations.map((s) => String(s).trim()).filter(Boolean);
+    }
+    if (caregiverBio !== undefined) {
+      user.caregiverBio = String(caregiverBio).trim();
+    }
+    if (hourlyRate !== undefined) {
+      user.hourlyRate = Math.max(0, Number(hourlyRate) || 0);
+    }
+    if (availableDays !== undefined && Array.isArray(availableDays)) {
+      user.availableDays = availableDays.map((d) => String(d).trim()).filter(Boolean);
+    }
+
     await user.save();
 
     return res.status(200).json({
@@ -636,6 +662,82 @@ const updateUserProfile = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error updating profile',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Add a professional certification to caregiver profile (Sprint 1)
+// @route   POST /api/auth/certifications
+// @access  Private (Caregiver)
+const addCaregiverCertification = async (req, res) => {
+  try {
+    const { title, issuingOrganization, issueDate, expiryDate, certificateNumber } = req.body;
+
+    if (!title || !issuingOrganization) {
+      return res.status(400).json({
+        success: false,
+        message: 'Certificate title and issuing organization are required',
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications.push({
+      title: title.trim(),
+      issuingOrganization: issuingOrganization.trim(),
+      issueDate: issueDate ? new Date(issueDate) : null,
+      expiryDate: expiryDate ? new Date(expiryDate) : null,
+      certificateNumber: certificateNumber ? certificateNumber.trim() : '',
+      verificationStatus: 'pending',
+    });
+
+    await user.save();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Certification added successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Add Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error adding certification',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Delete a professional certification from caregiver profile
+// @route   DELETE /api/auth/certifications/:id
+// @access  Private (Caregiver)
+const deleteCaregiverCertification = async (req, res) => {
+  try {
+    const certId = req.params.id;
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications = user.certifications.filter((c) => c._id.toString() !== certId);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Certification removed successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Delete Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error deleting certification',
       error: error.message,
     });
   }
@@ -962,4 +1064,6 @@ module.exports = {
   verifyProfileEmail,
   updateUserVerificationStatus,
   deleteUserAccount,
+  addCaregiverCertification,
+  deleteCaregiverCertification,
 };
