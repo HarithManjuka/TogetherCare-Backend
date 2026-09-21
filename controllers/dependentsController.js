@@ -572,17 +572,12 @@ exports.getUpcomingCareVisits = async (req, res) => {
       new Set([...linkedIds.map((id) => id.toString()), ...additionalLinked.map((u) => u._id.toString())])
     );
 
-    if (allSeniorIds.length === 0) {
-      return res.status(200).json({
-        success: true,
-        count: 0,
-        data: [],
-      });
-    }
-
     // 1. Upcoming HelpRequests
     const helpRequests = await HelpRequest.find({
-      elderlyId: { $in: allSeniorIds },
+      $or: [
+        ...(allSeniorIds.length > 0 ? [{ elderlyId: { $in: allSeniorIds } }] : []),
+        { caregiverId: req.user._id },
+      ],
       status: { $in: ['confirmed', 'matched', 'ongoing', 'arrived', 'searching'] },
     })
       .populate('elderlyId', 'firstName lastName customId phone address')

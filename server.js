@@ -62,9 +62,15 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 5001;
 
-// Only execute app.listen if NOT in a test environment and NOT in a serverless environment (Vercel sets process.env.VERCEL)
+// Attach HTTP Server & Socket.io
+const http = require('http');
+const { initSocket } = require('./socket');
+const server = http.createServer(app);
+initSocket(server);
+
+// Only execute server.listen if NOT in a test environment and NOT in a serverless environment (Vercel sets process.env.VERCEL)
 if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
-  const server = app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 TogetherCare Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
   });
 
