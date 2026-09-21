@@ -244,6 +244,26 @@ const UserSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+
+    // Messaging Contacts List
+    contacts: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        nickname: {
+          type: String,
+          trim: true,
+          default: '',
+        },
+        addedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   {
     timestamps: true,
