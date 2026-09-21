@@ -345,6 +345,28 @@ exports.deleteOffer = async (req, res) => {
 const HelpRequest = require('../models/HelpRequest');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
+const { createNotification } = require('./notificationController');
+
+// Helper to get equivalent service names across offers and requests
+const getServiceAliases = (serviceType) => {
+  const s = (serviceType || '').toLowerCase().trim();
+  if (s.includes('grocer') || s.includes('food')) {
+    return ['Grocery', 'Grocery Pickup', 'Buying food & groceries'];
+  }
+  if (s.includes('med') || s.includes('pharm') || s.includes('prescript')) {
+    return ['Medicine', 'Pharmacy Run', 'Fetching prescriptions'];
+  }
+  if (s.includes('comp') || s.includes('chat') || s.includes('social') || s.includes('call')) {
+    return ['Companionship', 'Companionship (Chat/Call)', 'Social visit & chat'];
+  }
+  if (s.includes('tech')) {
+    return ['Tech Support', 'Tech Support (phone setup)'];
+  }
+  if (s.includes('pet') || s.includes('walk')) {
+    return ['Pet Walking'];
+  }
+  return [serviceType];
+};
 
 // @desc    Get nearby / available community requests for volunteers to browse
 // @route   GET /api/volunteer-offers/available-requests
@@ -541,10 +563,11 @@ exports.acceptRequest = async (req, res) => {
     request.status = 'confirmed';
 
     // Check if volunteer has an active offer for this service/date, and decrement slots
+    const serviceAliases = getServiceAliases(request.serviceType);
     const matchingOffer = await VolunteerOffer.findOne({
       volunteerId: req.user._id,
       date: request.date,
-      services: { $in: [request.serviceType] },
+      services: { $in: serviceAliases },
       slotsLeft: { $gt: 0 },
       status: { $in: ['pending', 'active'] },
     });
@@ -559,6 +582,32 @@ exports.acceptRequest = async (req, res) => {
     }
 
     await request.save();
+
+    // Send notifications to caregiver and senior
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_approved',
+        title: 'Volunteer Accepted Request! 🤝',
+        message: `${volunteerName} has accepted your ${request.serviceType} visit request for ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    if (request.elderlyId) {
+      await createNotification({
+        recipient: request.elderlyId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_approved',
+        title: 'Volunteer Visit Confirmed 📅',
+        message: `${volunteerName} will be visiting for ${request.serviceType} on ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
 
     res.status(200).json({
       success: true,
