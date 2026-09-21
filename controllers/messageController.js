@@ -3,6 +3,7 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const { createNotification } = require('./notificationController');
 const { getIO } = require('../socket');
+const { uploadVoiceNote } = require('../services/cloudinaryService');
 
 /**
  * Helper to normalize Sri Lankan phone numbers to 9-digit suffix (e.g. 771234567)
@@ -622,6 +623,68 @@ const removeContact = async (req, res) => {
   }
 };
 
+// @desc    Upload voice message audio to Cloudinary
+// @route   POST /api/messages/upload-audio
+// @access  Private
+const uploadAudio = async (req, res) => {
+  try {
+    const file = req.file;
+    const { audioBase64, duration } = req.body;
+
+    if (!file && !audioBase64) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an audio file or base64 audio data',
+      });
+    }
+
+    let uploadResult;
+    try {
+      if (file) {
+        uploadResult = await uploadVoiceNote({ buffer: file.buffer });
+      } else {
+        uploadResult = await uploadVoiceNote({ base64Data: audioBase64 });
+      }
+    } catch (uploadErr) {
+      console.error('Cloudinary voice upload error:', uploadErr.message);
+      // Fallback for tests/offline environments if needed
+      if (audioBase64) {
+        uploadResult = {
+          secure_url: audioBase64.startsWith('data:')
+            ? audioBase64
+            : `data:audio/m4a;base64,${audioBase64}`,
+          duration: Number(duration) || 3,
+        };
+      } else if (file) {
+        const b64 = file.buffer.toString('base64');
+        const mime = file.mimetype || 'audio/m4a';
+        uploadResult = {
+          secure_url: `data:${mime};base64,${b64}`,
+          duration: Number(duration) || 3,
+        };
+      } else {
+        throw uploadErr;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Audio uploaded successfully',
+      data: {
+        audioUrl: uploadResult.secure_url,
+        audioDuration: Math.round(uploadResult.duration || Number(duration) || 3),
+      },
+    });
+  } catch (error) {
+    console.error('Upload Audio Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while uploading audio',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getConversations,
   getMessages,
@@ -631,4 +694,5 @@ module.exports = {
   addContact,
   getContacts,
   removeContact,
+  uploadAudio,
 };

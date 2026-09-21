@@ -10,10 +10,15 @@ const {
   addContact,
   getContacts,
   removeContact,
+  uploadAudio,
 } = require('../controllers/messageController');
 const { protect } = require('../middleware/authMiddleware');
+const { handleAudioUpload } = require('../middleware/audioUploadMiddleware');
 
 router.use(protect);
+
+// Voice audio upload
+router.post('/upload-audio', handleAudioUpload, uploadAudio);
 
 // Conversations & Contacts
 router.get('/conversations', getConversations);

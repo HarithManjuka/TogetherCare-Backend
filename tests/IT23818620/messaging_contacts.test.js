@@ -265,5 +265,49 @@ describe('IT23818620: Real-Time Messaging & Contact Management Integration Tests
       const msg = await Message.findOne({ sender: seniorUser._id, recipient: caregiverUser._id });
       expect(msg.isRead).toBe(true);
     });
+
+    it('should upload voice note audio via /api/messages/upload-audio', async () => {
+      const res = await request(app)
+        .post('/api/messages/upload-audio')
+        .set('Authorization', `Bearer ${caregiverToken}`)
+        .send({
+          audioBase64: 'data:audio/m4a;base64,AAAAHGZ0eXBNNEEgAAAAAE00QSBtcDQyaXNvbQ==',
+          duration: 5,
+        });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.audioUrl).toBeDefined();
+      expect(res.body.data.audioDuration).toBe(5);
+    });
+
+    it('should send a voice note message and retrieve populated conversation with audioUrl and duration', async () => {
+      const sendRes = await request(app)
+        .post('/api/messages')
+        .set('Authorization', `Bearer ${caregiverToken}`)
+        .send({
+          recipientId: seniorUser._id,
+          messageType: 'voice',
+          audioUrl: 'https://res.cloudinary.com/togethercare/voice_notes/sample.m4a',
+          audioDuration: 6,
+          text: '🎤 Voice note (6s)',
+        });
+
+      expect(sendRes.statusCode).toBe(201);
+      expect(sendRes.body.success).toBe(true);
+      expect(sendRes.body.data.messageType).toBe('voice');
+      expect(sendRes.body.data.audioUrl).toBe('https://res.cloudinary.com/togethercare/voice_notes/sample.m4a');
+      expect(sendRes.body.data.audioDuration).toBe(6);
+
+      // Verify in thread
+      const threadRes = await request(app)
+        .get(`/api/messages/${seniorUser._id}`)
+        .set('Authorization', `Bearer ${caregiverToken}`);
+
+      expect(threadRes.statusCode).toBe(200);
+      const voiceMsg = threadRes.body.data.find((m) => m.messageType === 'voice');
+      expect(voiceMsg).toBeDefined();
+      expect(voiceMsg.audioUrl).toBe('https://res.cloudinary.com/togethercare/voice_notes/sample.m4a');
+    });
   });
 });
