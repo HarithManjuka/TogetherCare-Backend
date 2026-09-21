@@ -33,58 +33,122 @@ const getVolunteerDetails = async (volunteerId) => {
   };
 };
 
+// Helper to get equivalent service names across offers and requests
+const getServiceAliases = (serviceType) => {
+  const s = (serviceType || '').toLowerCase().trim();
+  if (s.includes('grocer') || s.includes('food')) {
+    return ['Grocery', 'Grocery Pickup', 'Buying food & groceries'];
+  }
+  if (s.includes('med') || s.includes('pharm') || s.includes('prescript')) {
+    return ['Medicine', 'Pharmacy Run', 'Fetching prescriptions'];
+  }
+  if (s.includes('comp') || s.includes('chat') || s.includes('social') || s.includes('call')) {
+    return ['Companionship', 'Companionship (Chat/Call)', 'Social visit & chat'];
+  }
+  if (s.includes('tech')) {
+    return ['Tech Support', 'Tech Support (phone setup)'];
+  }
+  if (s.includes('pet') || s.includes('walk')) {
+    return ['Pet Walking'];
+  }
+  return [serviceType];
+};
+
 const getMatchingVolunteers = async (serviceType, date, location, rejectedVolunteers = []) => {
+  const serviceAliases = getServiceAliases(serviceType);
+  const rejectedStrings = (rejectedVolunteers || []).map(id => id.toString());
+  const loc = (location || '').toLowerCase().trim();
+
+  // 1. Search for VolunteerOffers matching service aliases and date
   let offers = await VolunteerOffer.find({
-    services: { $in: [serviceType] },
+    services: { $in: serviceAliases },
     date,
     slotsLeft: { $gt: 0 },
     status: { $in: ['pending', 'active'] },
   });
 
-  // Filter by location (flexible matching)
-  offers = offers.filter(offer => {
-    const area = (offer.serviceArea || '').toLowerCase().trim();
-    const loc = (location || '').toLowerCase().trim();
-    return loc.includes(area) || area.includes(loc);
-  });
-
-  // Filter out rejected volunteers
-  if (rejectedVolunteers && rejectedVolunteers.length > 0) {
-    const rejectedStrings = rejectedVolunteers.map(id => id.toString());
+  // Filter out rejected volunteers from offers
+  if (rejectedStrings.length > 0) {
     offers = offers.filter(offer => !rejectedStrings.includes(offer.volunteerId.toString()));
   }
 
-  // If no specific offers found, query actual registered active volunteers
-  if (offers.length === 0) {
-    let query = { role: 'volunteer', accountStatus: 'active' };
-    if (rejectedVolunteers && rejectedVolunteers.length > 0) {
-      query._id = { $nin: rejectedVolunteers };
-    }
-    const realVolunteers = await User.find(query).limit(5);
-    const matches = [];
-    for (let vol of realVolunteers) {
-      const details = await getVolunteerDetails(vol._id);
-      if (details) {
-        matches.push({
-          volunteer: details,
-          offerId: null,
-        });
-      }
-    }
-    return matches;
+  // 2. Fetch all registered volunteers (active or pending verification, not banned)
+  let volQuery = {
+    role: 'volunteer',
+    accountStatus: { $in: ['active', 'pending_verification'] },
+    isBanned: { $ne: true },
+  };
+  if (rejectedStrings.length > 0) {
+    volQuery._id = { $nin: rejectedVolunteers };
   }
+  const allVolunteers = await User.find(volQuery).select('-password');
 
-  const matches = [];
+  // Map to store matched results by volunteerId
+  const matchesMap = new Map();
+
+  // Helper to calculate location score (higher is better)
+  const calcLocationScore = (areaStr) => {
+    if (!loc || !areaStr) return 0;
+    const cleanArea = areaStr.toLowerCase().trim();
+    if (loc === cleanArea) return 3; // exact match
+    if (loc.includes(cleanArea) || cleanArea.includes(loc)) return 2; // substring match
+    // Check word-by-word (e.g. city or district match)
+    const locWords = loc.split(/[\s,]+/).filter(w => w.length > 2);
+    const areaWords = cleanArea.split(/[\s,]+/).filter(w => w.length > 2);
+    const hasCommonWord = locWords.some(lw => areaWords.some(aw => aw === lw || aw.includes(lw) || lw.includes(aw)));
+    if (hasCommonWord) return 1;
+    return 0;
+  };
+
+  // Add volunteers who have posted matching offers first
   for (let offer of offers) {
+    const volIdStr = offer.volunteerId.toString();
+    if (matchesMap.has(volIdStr)) continue;
+
     const details = await getVolunteerDetails(offer.volunteerId);
     if (details) {
-      matches.push({
+      const locScore = calcLocationScore(offer.serviceArea || details.profile?.address?.city);
+      matchesMap.set(volIdStr, {
         volunteer: details,
         offerId: offer._id,
+        hasOffer: true,
+        score: 10 + locScore,
       });
     }
   }
-  return matches;
+
+  // Add all other registered volunteers
+  for (let vol of allVolunteers) {
+    const volIdStr = vol._id.toString();
+    if (matchesMap.has(volIdStr)) continue;
+
+    const details = await getVolunteerDetails(vol._id);
+    if (details) {
+      const volCity = vol.address?.city || '';
+      const volDistrict = vol.address?.district || '';
+      const locScore = Math.max(calcLocationScore(volCity), calcLocationScore(volDistrict));
+      matchesMap.set(volIdStr, {
+        volunteer: details,
+        offerId: null,
+        hasOffer: false,
+        score: locScore,
+      });
+    }
+  }
+
+  // Sort: highest score first, then by rating, then by review count
+  const sortedMatches = Array.from(matchesMap.values()).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.volunteer.averageRating !== a.volunteer.averageRating) {
+      return b.volunteer.averageRating - a.volunteer.averageRating;
+    }
+    return (b.volunteer.ratingCount || 0) - (a.volunteer.ratingCount || 0);
+  });
+
+  return sortedMatches.map(({ volunteer, offerId }) => ({
+    volunteer,
+    offerId,
+  }));
 };
 
 // @desc    Create a new help request and run match search
@@ -253,7 +317,7 @@ exports.getRequestDetails = async (req, res) => {
   }
 };
 
-// @desc    Approve matched volunteer
+// @desc    Approve/Request matched volunteer (Caregiver requests volunteer)
 // @route   POST /api/help-requests/:id/approve
 // @access  Private (Caregiver)
 exports.approveMatch = async (req, res) => {
@@ -270,43 +334,287 @@ exports.approveMatch = async (req, res) => {
     }
 
     if (request.status !== 'searching' && request.status !== 'matched') {
-      return res.status(400).json({ success: false, message: 'Request cannot be approved in current state' });
+      return res.status(400).json({ success: false, message: 'Request cannot be modified in current state' });
     }
 
     const resolvedVolunteerId = volunteerId || request.volunteerId;
     if (!resolvedVolunteerId) {
-      return res.status(400).json({ success: false, message: 'Please specify volunteer ID to confirm' });
+      return res.status(400).json({ success: false, message: 'Please specify volunteer ID to request' });
     }
 
+    // Verify volunteer exists and is valid
+    const volunteerUser = await User.findById(resolvedVolunteerId);
+    if (!volunteerUser || volunteerUser.role !== 'volunteer') {
+      return res.status(404).json({ success: false, message: 'Volunteer profile not found' });
+    }
+
+    const serviceAliases = getServiceAliases(request.serviceType);
     const offer = await VolunteerOffer.findOne({
       volunteerId: resolvedVolunteerId,
       date: request.date,
-      services: { $in: [request.serviceType] },
+      services: { $in: serviceAliases },
       slotsLeft: { $gt: 0 },
       status: { $in: ['pending', 'active'] },
     });
 
-    if (!offer) {
-      return res.status(400).json({ success: false, message: 'Selected volunteer offer is no longer available' });
-    }
-
     request.volunteerId = resolvedVolunteerId;
-    request.volunteerOfferId = offer._id;
-    request.status = 'confirmed';
+    request.volunteerOfferId = offer ? offer._id : null;
+
+    // Set to 'matched' (pending volunteer acceptance)
+    request.status = 'matched';
+    request.autoApproved = false;
     await request.save();
 
-    offer.slotsLeft = Math.max(0, offer.slotsLeft - 1);
-    offer.status = offer.slotsLeft === 0 ? 'booked' : 'active';
-    await offer.save();
+    // Send notifications to volunteer
+    const caregiverName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    const dependent = await User.findById(request.elderlyId);
+    const seniorName = dependent ? `${dependent.firstName} ${dependent.lastName || ''}`.trim() : 'a senior';
+
+    await createNotification({
+      recipient: resolvedVolunteerId,
+      sender: req.user._id,
+      senior: request.elderlyId,
+      type: 'visit_requested',
+      title: 'New Visit Request! 🤝',
+      message: `${caregiverName} has requested you for a ${request.serviceType} visit for ${seniorName} on ${request.date} at ${request.time}. Please review and respond in your schedule.`,
+      data: { requestId: request._id, date: request.date, time: request.time },
+    });
 
     res.status(200).json({
       success: true,
-      message: 'Match approved successfully and volunteer confirmed!',
+      message: 'Visit request sent to volunteer! Awaiting volunteer acceptance.',
       data: request,
     });
   } catch (error) {
     console.error('Approve Match Error:', error);
-    res.status(500).json({ success: false, message: 'Server error while approving match' });
+    res.status(500).json({ success: false, message: error.message || 'Server error while sending request' });
+  }
+};
+
+// @desc    Volunteer accepts a visit request
+// @route   POST /api/help-requests/:id/volunteer-accept
+// @access  Private (Volunteer)
+exports.volunteerAccept = async (req, res) => {
+  try {
+    const request = await HelpRequest.findById(req.params.id)
+      .populate('caregiverId', 'firstName lastName phone')
+      .populate('elderlyId', 'firstName lastName phone address');
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'matched') {
+      return res.status(400).json({ success: false, message: 'Request is not in pending acceptance state' });
+    }
+
+    request.status = 'confirmed';
+
+    // If matching offer exists, decrement slots
+    if (request.volunteerOfferId) {
+      const offer = await VolunteerOffer.findById(request.volunteerOfferId);
+      if (offer) {
+        offer.slotsLeft = Math.max(0, offer.slotsLeft - 1);
+        offer.status = offer.slotsLeft === 0 ? 'booked' : 'active';
+        await offer.save();
+      }
+    }
+
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    const senior = request.elderlyId;
+    const seniorName = senior ? `${senior.firstName} ${senior.lastName || ''}`.trim() : 'a senior';
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId._id,
+        sender: req.user._id,
+        senior: request.elderlyId?._id,
+        type: 'visit_approved',
+        title: 'Volunteer Accepted Request! 🎉',
+        message: `${volunteerName} accepted your ${request.serviceType} visit request for ${seniorName} on ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    // Notify senior
+    if (request.elderlyId) {
+      await createNotification({
+        recipient: request.elderlyId._id,
+        sender: req.user._id,
+        senior: request.elderlyId._id,
+        type: 'visit_approved',
+        title: 'Volunteer Visit Confirmed 🤝',
+        message: `${volunteerName} has been confirmed for your ${request.serviceType} visit on ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'You have accepted this visit request! It is now confirmed.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Volunteer Accept Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while accepting request' });
+  }
+};
+
+// @desc    Volunteer declines a visit request
+// @route   POST /api/help-requests/:id/volunteer-decline
+// @access  Private (Volunteer)
+exports.volunteerDecline = async (req, res) => {
+  try {
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'matched') {
+      return res.status(400).json({ success: false, message: 'Request is not in pending acceptance state' });
+    }
+
+    // Revert to searching, add volunteer to rejected list
+    request.volunteerId = null;
+    request.volunteerOfferId = null;
+    request.status = 'searching';
+    if (!request.rejectedVolunteers.includes(req.user._id)) {
+      request.rejectedVolunteers.push(req.user._id);
+    }
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_declined',
+        title: 'Volunteer Was Unavailable ℹ️',
+        message: `${volunteerName} was unable to accept your ${request.serviceType} visit request. Please select another available volunteer.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'You have declined this visit request.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Volunteer Decline Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while declining request' });
+  }
+};
+
+// @desc    Volunteer agrees to share location and starts trip
+// @route   POST /api/help-requests/:id/start-trip
+// @access  Private (Volunteer)
+exports.startTrip = async (req, res) => {
+  try {
+    const { lat, lng, address } = req.body;
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'confirmed' && request.status !== 'ongoing') {
+      return res.status(400).json({ success: false, message: 'Request must be confirmed before starting trip' });
+    }
+
+    request.status = 'ongoing';
+    request.trackingConsent = true;
+    request.tripStartedAt = new Date();
+
+    const volUser = await User.findById(req.user._id);
+    const resolvedAddress = address || (volUser.address ? `${volUser.address.streetAddress}, ${volUser.address.city}` : '');
+
+    request.volunteerLocation = {
+      lat: lat !== undefined ? lat : (volUser.address?.city === 'Colombo' ? 6.9271 : 6.5854),
+      lng: lng !== undefined ? lng : (volUser.address?.city === 'Colombo' ? 79.8612 : 79.9607),
+      address: resolvedAddress,
+      updatedAt: new Date(),
+    };
+
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'trip_started',
+        title: 'Volunteer On The Way! 📍',
+        message: `${volunteerName} has started their trip and is sharing live arrival directions.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Trip started! Live location sharing is now active with the family member.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Start Trip Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while starting trip' });
+  }
+};
+
+// @desc    Update volunteer live location
+// @route   PUT /api/help-requests/:id/location
+// @access  Private (Volunteer)
+exports.updateLocation = async (req, res) => {
+  try {
+    const { lat, lng, address } = req.body;
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    request.volunteerLocation = {
+      lat: lat !== undefined ? lat : request.volunteerLocation?.lat,
+      lng: lng !== undefined ? lng : request.volunteerLocation?.lng,
+      address: address || request.volunteerLocation?.address || '',
+      updatedAt: new Date(),
+    };
+
+    await request.save();
+
+    res.status(200).json({
+      success: true,
+      data: request.volunteerLocation,
+    });
+  } catch (error) {
+    console.error('Update Location Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error updating location' });
   }
 };
 

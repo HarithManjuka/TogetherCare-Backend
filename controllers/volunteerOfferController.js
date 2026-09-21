@@ -345,6 +345,28 @@ exports.deleteOffer = async (req, res) => {
 const HelpRequest = require('../models/HelpRequest');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
+const { createNotification } = require('./notificationController');
+
+// Helper to get equivalent service names across offers and requests
+const getServiceAliases = (serviceType) => {
+  const s = (serviceType || '').toLowerCase().trim();
+  if (s.includes('grocer') || s.includes('food')) {
+    return ['Grocery', 'Grocery Pickup', 'Buying food & groceries'];
+  }
+  if (s.includes('med') || s.includes('pharm') || s.includes('prescript')) {
+    return ['Medicine', 'Pharmacy Run', 'Fetching prescriptions'];
+  }
+  if (s.includes('comp') || s.includes('chat') || s.includes('social') || s.includes('call')) {
+    return ['Companionship', 'Companionship (Chat/Call)', 'Social visit & chat'];
+  }
+  if (s.includes('tech')) {
+    return ['Tech Support', 'Tech Support (phone setup)'];
+  }
+  if (s.includes('pet') || s.includes('walk')) {
+    return ['Pet Walking'];
+  }
+  return [serviceType];
+};
 
 // @desc    Get nearby / available community requests for volunteers to browse
 // @route   GET /api/volunteer-offers/available-requests
@@ -541,10 +563,11 @@ exports.acceptRequest = async (req, res) => {
     request.status = 'confirmed';
 
     // Check if volunteer has an active offer for this service/date, and decrement slots
+    const serviceAliases = getServiceAliases(request.serviceType);
     const matchingOffer = await VolunteerOffer.findOne({
       volunteerId: req.user._id,
       date: request.date,
-      services: { $in: [request.serviceType] },
+      services: { $in: serviceAliases },
       slotsLeft: { $gt: 0 },
       status: { $in: ['pending', 'active'] },
     });
@@ -559,6 +582,32 @@ exports.acceptRequest = async (req, res) => {
     }
 
     await request.save();
+
+    // Send notifications to caregiver and senior
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_approved',
+        title: 'Volunteer Accepted Request! 🤝',
+        message: `${volunteerName} has accepted your ${request.serviceType} visit request for ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    if (request.elderlyId) {
+      await createNotification({
+        recipient: request.elderlyId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_approved',
+        title: 'Volunteer Visit Confirmed 📅',
+        message: `${volunteerName} will be visiting for ${request.serviceType} on ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -581,9 +630,10 @@ exports.getMySchedule = async (req, res) => {
   try {
     const helpVisits = await HelpRequest.find({
       volunteerId: req.user._id,
-      status: { $in: ['confirmed', 'arrived', 'ongoing'] },
+      status: { $in: ['matched', 'confirmed', 'ongoing', 'arrived'] },
     })
       .populate('elderlyId', 'firstName lastName phone address')
+      .populate('caregiverId', 'firstName lastName phone')
       .sort({ date: 1, time: 1 });
 
     const compVisits = await CompanionshipRequest.find({
@@ -597,16 +647,22 @@ exports.getMySchedule = async (req, res) => {
 
     helpVisits.forEach((item) => {
       const elder = item.elderlyId || {};
+      const caregiver = item.caregiverId || {};
       schedule.push({
         id: item._id.toString(),
         _id: item._id.toString(),
+        requestId: item._id.toString(),
         serviceType: item.serviceType || 'Elderly Assistance',
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
         elderPhone: elder.phone || '',
+        caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
+        caregiverPhone: caregiver.phone || '',
         date: item.date || 'Today',
         time: item.time || '10:00 AM',
         location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
-        status: item.status, // 'confirmed' | 'arrived'
+        status: item.status, // 'matched' | 'confirmed' | 'ongoing' | 'arrived'
+        isDirectRequest: item.status === 'matched',
+        trackingConsent: item.trackingConsent || false,
         arrivedAt: item.arrivedAt,
         notes: `Task for ${item.serviceType}.`,
         source: 'help_request',
@@ -840,6 +896,57 @@ exports.getMyStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fetching volunteer statistics',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get pending direct visit requests sent by family members to this volunteer
+// @route   GET /api/volunteer-offers/direct-requests
+// @access  Private (Volunteer)
+exports.getDirectRequests = async (req, res) => {
+  try {
+    const directRequests = await HelpRequest.find({
+      volunteerId: req.user._id,
+      status: 'matched',
+    })
+      .populate('elderlyId', 'firstName lastName phone address')
+      .populate('caregiverId', 'firstName lastName phone')
+      .sort({ createdAt: -1 });
+
+    const formatted = directRequests.map((hr) => {
+      const elder = hr.elderlyId || {};
+      const caregiver = hr.caregiverId || {};
+      return {
+        id: hr._id.toString(),
+        _id: hr._id.toString(),
+        requestId: hr._id.toString(),
+        type: `${hr.serviceType} Assistance`,
+        serviceType: hr.serviceType,
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        elderPhone: elder.phone || '',
+        caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
+        caregiverPhone: caregiver.phone || '',
+        date: hr.date,
+        time: hr.time,
+        location: hr.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+        address: hr.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+        status: hr.status,
+        isDirectRequest: true,
+        createdAt: hr.createdAt,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      count: formatted.length,
+      data: formatted,
+    });
+  } catch (error) {
+    console.error('Get Direct Requests Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching direct requests',
       error: error.message,
     });
   }

@@ -33,7 +33,7 @@ const HelpRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['searching', 'matched', 'confirmed', 'arrived', 'completed', 'cancelled'],
+      enum: ['searching', 'matched', 'confirmed', 'ongoing', 'arrived', 'completed', 'cancelled'],
       default: 'searching',
     },
     volunteerId: {
@@ -81,6 +81,20 @@ const HelpRequestSchema = new mongoose.Schema(
     completedAt: {
       type: Date,
       default: null,
+    },
+    trackingConsent: {
+      type: Boolean,
+      default: false,
+    },
+    tripStartedAt: {
+      type: Date,
+      default: null,
+    },
+    volunteerLocation: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      address: { type: String, default: '' },
+      updatedAt: { type: Date, default: null },
     },
   },
   {

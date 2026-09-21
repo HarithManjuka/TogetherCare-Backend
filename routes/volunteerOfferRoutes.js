@@ -13,6 +13,7 @@ const {
   updateTaskStatus,
   getMyHistory,
   getMyStats,
+  getDirectRequests,
 } = require('../controllers/volunteerOfferController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -24,6 +25,7 @@ router.route('/')
 router.get('/my-offers', protect, getMyOffers);
 
 // Volunteer tasks & requests
+router.get('/direct-requests', protect, getDirectRequests);
 router.get('/available-requests', protect, getAvailableRequests);
 router.post('/requests/:id/accept', protect, acceptRequest);
 router.get('/my-schedule', protect, getMySchedule);
