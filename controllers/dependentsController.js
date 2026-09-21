@@ -2,6 +2,7 @@
 const User = require('../models/User');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const HelpRequest = require('../models/HelpRequest');
+const Activity = require('../models/Activity');
 const { generateHumanReadableId } = require('../utils/customIdGenerator');
 const { createNotification } = require('./notificationController');
 
@@ -582,7 +583,7 @@ exports.getUpcomingCareVisits = async (req, res) => {
     // 1. Upcoming HelpRequests
     const helpRequests = await HelpRequest.find({
       elderlyId: { $in: allSeniorIds },
-      status: { $in: ['confirmed', 'matched', 'arrived', 'searching'] },
+      status: { $in: ['confirmed', 'matched', 'ongoing', 'arrived', 'searching'] },
     })
       .populate('elderlyId', 'firstName lastName customId phone address')
       .populate('volunteerId', 'firstName lastName phone profilePicture verificationBadgeStatus averageRating')

@@ -13,6 +13,10 @@ const {
   getAvailableAssignments,
   acceptCaregiverAssignment,
   getCompletedCaregiverVisits,
+  volunteerAccept,
+  volunteerDecline,
+  startTrip,
+  updateLocation,
 } = require('../controllers/helpRequestController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -32,6 +36,10 @@ router.route('/:id')
 
 router.post('/:id/approve', approveMatch);
 router.post('/:id/reject', rejectMatch);
+router.post('/:id/volunteer-accept', volunteerAccept);
+router.post('/:id/volunteer-decline', volunteerDecline);
+router.post('/:id/start-trip', startTrip);
+router.put('/:id/location', updateLocation);
 router.post('/:id/sos', triggerSOS);
 router.post('/:id/feedback', submitFeedback);
 router.post('/:id/simulate-status', simulateStatus);

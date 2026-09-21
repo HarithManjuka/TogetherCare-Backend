@@ -317,7 +317,7 @@ exports.getRequestDetails = async (req, res) => {
   }
 };
 
-// @desc    Approve matched volunteer
+// @desc    Approve/Request matched volunteer (Caregiver requests volunteer)
 // @route   POST /api/help-requests/:id/approve
 // @access  Private (Caregiver)
 exports.approveMatch = async (req, res) => {
@@ -334,12 +334,12 @@ exports.approveMatch = async (req, res) => {
     }
 
     if (request.status !== 'searching' && request.status !== 'matched') {
-      return res.status(400).json({ success: false, message: 'Request cannot be approved in current state' });
+      return res.status(400).json({ success: false, message: 'Request cannot be modified in current state' });
     }
 
     const resolvedVolunteerId = volunteerId || request.volunteerId;
     if (!resolvedVolunteerId) {
-      return res.status(400).json({ success: false, message: 'Please specify volunteer ID to confirm' });
+      return res.status(400).json({ success: false, message: 'Please specify volunteer ID to request' });
     }
 
     // Verify volunteer exists and is valid
@@ -358,56 +358,263 @@ exports.approveMatch = async (req, res) => {
     });
 
     request.volunteerId = resolvedVolunteerId;
-    if (offer) {
-      request.volunteerOfferId = offer._id;
-      offer.slotsLeft = Math.max(0, offer.slotsLeft - 1);
-      offer.status = offer.slotsLeft === 0 ? 'booked' : 'active';
-      await offer.save();
-    } else {
-      request.volunteerOfferId = null;
-    }
+    request.volunteerOfferId = offer ? offer._id : null;
 
-    request.status = 'confirmed';
+    // Set to 'matched' (pending volunteer acceptance)
+    request.status = 'matched';
     request.autoApproved = false;
     await request.save();
 
-    // Send notifications to volunteer and elderly dependent
+    // Send notifications to volunteer
     const caregiverName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
     const dependent = await User.findById(request.elderlyId);
     const seniorName = dependent ? `${dependent.firstName} ${dependent.lastName || ''}`.trim() : 'a senior';
 
-    // 1. Notify volunteer
     await createNotification({
       recipient: resolvedVolunteerId,
       sender: req.user._id,
       senior: request.elderlyId,
-      type: 'visit_approved',
-      title: 'New Visit Request Confirmed! 🎉',
-      message: `${caregiverName} has selected you for a ${request.serviceType} visit for ${seniorName} on ${request.date} at ${request.time}.`,
+      type: 'visit_requested',
+      title: 'New Visit Request! 🤝',
+      message: `${caregiverName} has requested you for a ${request.serviceType} visit for ${seniorName} on ${request.date} at ${request.time}. Please review and respond in your schedule.`,
       data: { requestId: request._id, date: request.date, time: request.time },
     });
 
-    // 2. Notify senior (if linked)
+    res.status(200).json({
+      success: true,
+      message: 'Visit request sent to volunteer! Awaiting volunteer acceptance.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Approve Match Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while sending request' });
+  }
+};
+
+// @desc    Volunteer accepts a visit request
+// @route   POST /api/help-requests/:id/volunteer-accept
+// @access  Private (Volunteer)
+exports.volunteerAccept = async (req, res) => {
+  try {
+    const request = await HelpRequest.findById(req.params.id)
+      .populate('caregiverId', 'firstName lastName phone')
+      .populate('elderlyId', 'firstName lastName phone address');
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'matched') {
+      return res.status(400).json({ success: false, message: 'Request is not in pending acceptance state' });
+    }
+
+    request.status = 'confirmed';
+
+    // If matching offer exists, decrement slots
+    if (request.volunteerOfferId) {
+      const offer = await VolunteerOffer.findById(request.volunteerOfferId);
+      if (offer) {
+        offer.slotsLeft = Math.max(0, offer.slotsLeft - 1);
+        offer.status = offer.slotsLeft === 0 ? 'booked' : 'active';
+        await offer.save();
+      }
+    }
+
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    const senior = request.elderlyId;
+    const seniorName = senior ? `${senior.firstName} ${senior.lastName || ''}`.trim() : 'a senior';
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId._id,
+        sender: req.user._id,
+        senior: request.elderlyId?._id,
+        type: 'visit_approved',
+        title: 'Volunteer Accepted Request! 🎉',
+        message: `${volunteerName} accepted your ${request.serviceType} visit request for ${seniorName} on ${request.date} at ${request.time}.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    // Notify senior
     if (request.elderlyId) {
       await createNotification({
-        recipient: request.elderlyId,
+        recipient: request.elderlyId._id,
         sender: req.user._id,
-        senior: request.elderlyId,
+        senior: request.elderlyId._id,
         type: 'visit_approved',
-        title: 'Volunteer Confirmed 🤝',
-        message: `${volunteerUser.firstName} ${volunteerUser.lastName || ''} has been scheduled for your ${request.serviceType} visit on ${request.date} at ${request.time}.`,
+        title: 'Volunteer Visit Confirmed 🤝',
+        message: `${volunteerName} has been confirmed for your ${request.serviceType} visit on ${request.date} at ${request.time}.`,
         data: { requestId: request._id, date: request.date, time: request.time },
       });
     }
 
     res.status(200).json({
       success: true,
-      message: 'Match approved successfully and volunteer confirmed!',
+      message: 'You have accepted this visit request! It is now confirmed.',
       data: request,
     });
   } catch (error) {
-    console.error('Approve Match Error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Server error while approving match' });
+    console.error('Volunteer Accept Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while accepting request' });
+  }
+};
+
+// @desc    Volunteer declines a visit request
+// @route   POST /api/help-requests/:id/volunteer-decline
+// @access  Private (Volunteer)
+exports.volunteerDecline = async (req, res) => {
+  try {
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'matched') {
+      return res.status(400).json({ success: false, message: 'Request is not in pending acceptance state' });
+    }
+
+    // Revert to searching, add volunteer to rejected list
+    request.volunteerId = null;
+    request.volunteerOfferId = null;
+    request.status = 'searching';
+    if (!request.rejectedVolunteers.includes(req.user._id)) {
+      request.rejectedVolunteers.push(req.user._id);
+    }
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'visit_declined',
+        title: 'Volunteer Was Unavailable ℹ️',
+        message: `${volunteerName} was unable to accept your ${request.serviceType} visit request. Please select another available volunteer.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'You have declined this visit request.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Volunteer Decline Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while declining request' });
+  }
+};
+
+// @desc    Volunteer agrees to share location and starts trip
+// @route   POST /api/help-requests/:id/start-trip
+// @access  Private (Volunteer)
+exports.startTrip = async (req, res) => {
+  try {
+    const { lat, lng, address } = req.body;
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    if (request.status !== 'confirmed' && request.status !== 'ongoing') {
+      return res.status(400).json({ success: false, message: 'Request must be confirmed before starting trip' });
+    }
+
+    request.status = 'ongoing';
+    request.trackingConsent = true;
+    request.tripStartedAt = new Date();
+
+    const volUser = await User.findById(req.user._id);
+    const resolvedAddress = address || (volUser.address ? `${volUser.address.streetAddress}, ${volUser.address.city}` : '');
+
+    request.volunteerLocation = {
+      lat: lat !== undefined ? lat : (volUser.address?.city === 'Colombo' ? 6.9271 : 6.5854),
+      lng: lng !== undefined ? lng : (volUser.address?.city === 'Colombo' ? 79.8612 : 79.9607),
+      address: resolvedAddress,
+      updatedAt: new Date(),
+    };
+
+    await request.save();
+
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
+    // Notify caregiver
+    if (request.caregiverId) {
+      await createNotification({
+        recipient: request.caregiverId,
+        sender: req.user._id,
+        senior: request.elderlyId,
+        type: 'trip_started',
+        title: 'Volunteer On The Way! 📍',
+        message: `${volunteerName} has started their trip and is sharing live arrival directions.`,
+        data: { requestId: request._id, date: request.date, time: request.time },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Trip started! Live location sharing is now active with the family member.',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Start Trip Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error while starting trip' });
+  }
+};
+
+// @desc    Update volunteer live location
+// @route   PUT /api/help-requests/:id/location
+// @access  Private (Volunteer)
+exports.updateLocation = async (req, res) => {
+  try {
+    const { lat, lng, address } = req.body;
+    const request = await HelpRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (!request.volunteerId || request.volunteerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+    }
+
+    request.volunteerLocation = {
+      lat: lat !== undefined ? lat : request.volunteerLocation?.lat,
+      lng: lng !== undefined ? lng : request.volunteerLocation?.lng,
+      address: address || request.volunteerLocation?.address || '',
+      updatedAt: new Date(),
+    };
+
+    await request.save();
+
+    res.status(200).json({
+      success: true,
+      data: request.volunteerLocation,
+    });
+  } catch (error) {
+    console.error('Update Location Error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error updating location' });
   }
 };
 

@@ -630,9 +630,10 @@ exports.getMySchedule = async (req, res) => {
   try {
     const helpVisits = await HelpRequest.find({
       volunteerId: req.user._id,
-      status: { $in: ['confirmed', 'arrived', 'ongoing'] },
+      status: { $in: ['matched', 'confirmed', 'ongoing', 'arrived'] },
     })
       .populate('elderlyId', 'firstName lastName phone address')
+      .populate('caregiverId', 'firstName lastName phone')
       .sort({ date: 1, time: 1 });
 
     const compVisits = await CompanionshipRequest.find({
@@ -646,16 +647,22 @@ exports.getMySchedule = async (req, res) => {
 
     helpVisits.forEach((item) => {
       const elder = item.elderlyId || {};
+      const caregiver = item.caregiverId || {};
       schedule.push({
         id: item._id.toString(),
         _id: item._id.toString(),
+        requestId: item._id.toString(),
         serviceType: item.serviceType || 'Elderly Assistance',
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
         elderPhone: elder.phone || '',
+        caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
+        caregiverPhone: caregiver.phone || '',
         date: item.date || 'Today',
         time: item.time || '10:00 AM',
         location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
-        status: item.status, // 'confirmed' | 'arrived'
+        status: item.status, // 'matched' | 'confirmed' | 'ongoing' | 'arrived'
+        isDirectRequest: item.status === 'matched',
+        trackingConsent: item.trackingConsent || false,
         arrivedAt: item.arrivedAt,
         notes: `Task for ${item.serviceType}.`,
         source: 'help_request',
@@ -889,6 +896,57 @@ exports.getMyStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fetching volunteer statistics',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get pending direct visit requests sent by family members to this volunteer
+// @route   GET /api/volunteer-offers/direct-requests
+// @access  Private (Volunteer)
+exports.getDirectRequests = async (req, res) => {
+  try {
+    const directRequests = await HelpRequest.find({
+      volunteerId: req.user._id,
+      status: 'matched',
+    })
+      .populate('elderlyId', 'firstName lastName phone address')
+      .populate('caregiverId', 'firstName lastName phone')
+      .sort({ createdAt: -1 });
+
+    const formatted = directRequests.map((hr) => {
+      const elder = hr.elderlyId || {};
+      const caregiver = hr.caregiverId || {};
+      return {
+        id: hr._id.toString(),
+        _id: hr._id.toString(),
+        requestId: hr._id.toString(),
+        type: `${hr.serviceType} Assistance`,
+        serviceType: hr.serviceType,
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        elderPhone: elder.phone || '',
+        caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
+        caregiverPhone: caregiver.phone || '',
+        date: hr.date,
+        time: hr.time,
+        location: hr.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+        address: hr.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+        status: hr.status,
+        isDirectRequest: true,
+        createdAt: hr.createdAt,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      count: formatted.length,
+      data: formatted,
+    });
+  } catch (error) {
+    console.error('Get Direct Requests Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching direct requests',
       error: error.message,
     });
   }

@@ -24,6 +24,10 @@ const NotificationSchema = new mongoose.Schema(
       enum: [
         'sos_alert',
         'volunteer_matched',
+        'visit_requested',
+        'visit_accepted',
+        'visit_declined',
+        'trip_started',
         'visit_approved',
         'visit_started',
         'visit_completed',
