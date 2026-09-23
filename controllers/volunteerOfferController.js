@@ -707,11 +707,11 @@ exports.getMySchedule = async (req, res) => {
 exports.updateTaskStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const allowed = ['arrived', 'completed', 'cancelled'];
+    const allowed = ['ongoing', 'arrived', 'completed', 'cancelled'];
     if (!allowed.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid status. Must be arrived, completed, or cancelled',
+        message: 'Invalid status. Must be ongoing, arrived, completed, or cancelled',
       });
     }
 
@@ -741,7 +741,10 @@ exports.updateTaskStatus = async (req, res) => {
     }
 
     request.status = status;
-    if (status === 'arrived') {
+    if (status === 'ongoing') {
+      request.trackingConsent = true;
+      request.tripStartedAt = Date.now();
+    } else if (status === 'arrived') {
       request.arrivedAt = Date.now();
     } else if (status === 'completed') {
       request.completedAt = Date.now();

@@ -527,9 +527,22 @@ exports.volunteerDecline = async (req, res) => {
 exports.startTrip = async (req, res) => {
   try {
     const { lat, lng, address } = req.body;
-    const request = await HelpRequest.findById(req.params.id);
+    let request = await HelpRequest.findById(req.params.id);
 
     if (!request) {
+      const compReq = await CompanionshipRequest.findById(req.params.id);
+      if (compReq) {
+        if (!compReq.volunteer || compReq.volunteer.toString() !== req.user._id.toString()) {
+          return res.status(403).json({ success: false, message: 'Not authorized for this request' });
+        }
+        compReq.status = 'ongoing';
+        await compReq.save();
+        return res.status(200).json({
+          success: true,
+          message: 'Trip started! Live location sharing is now active.',
+          data: compReq,
+        });
+      }
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
