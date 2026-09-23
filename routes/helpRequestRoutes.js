@@ -10,10 +10,22 @@ const {
   triggerSOS,
   submitFeedback,
   simulateStatus,
+  getAvailableAssignments,
+  acceptCaregiverAssignment,
+  getCompletedCaregiverVisits,
+  volunteerAccept,
+  volunteerDecline,
+  startTrip,
+  updateLocation,
 } = require('../controllers/helpRequestController');
 const { protect } = require('../middleware/authMiddleware');
 
 router.use(protect);
+
+// Caregiver Assignment & Visit tracking routes (Sprint 3 & US-402)
+router.get('/caregiver/assignments', getAvailableAssignments);
+router.post('/caregiver/assignments/:id/accept', acceptCaregiverAssignment);
+router.get('/caregiver/visits/completed', getCompletedCaregiverVisits);
 
 router.route('/')
   .post(createHelpRequest)
@@ -24,6 +36,10 @@ router.route('/:id')
 
 router.post('/:id/approve', approveMatch);
 router.post('/:id/reject', rejectMatch);
+router.post('/:id/volunteer-accept', volunteerAccept);
+router.post('/:id/volunteer-decline', volunteerDecline);
+router.post('/:id/start-trip', startTrip);
+router.put('/:id/location', updateLocation);
 router.post('/:id/sos', triggerSOS);
 router.post('/:id/feedback', submitFeedback);
 router.post('/:id/simulate-status', simulateStatus);

@@ -15,7 +15,7 @@ const getUpcomingVisits = async (req, res) => {
       elderly: userId,
       status: 'accepted',
     })
-      .populate('volunteer', 'firstName lastName phone email')
+      .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus')
       .sort({ scheduledDate: 1 });
 
     return res.status(200).json({
@@ -42,7 +42,7 @@ const getMyRequests = async (req, res) => {
   try {
     const userId = req.user._id;
     const requests = await CompanionshipRequest.find({ elderly: userId })
-      .populate('volunteer', 'firstName lastName phone email profilePicture')
+      .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus')
       .populate('activityId', 'name icon iconFamily')
       .sort({ scheduledDate: -1, createdAt: -1 });
 
@@ -279,7 +279,7 @@ const getOpenRequests = async (req, res) => {
       status: 'pending',
       volunteer: null,
     })
-      .populate('elderly', 'firstName lastName profilePicture phone address')
+      .populate('elderly', 'firstName lastName profilePicture phone address isEmailVerified verificationBadgeStatus age interests')
       .sort({ scheduledDate: 1, createdAt: -1 });
 
     return res.status(200).json({

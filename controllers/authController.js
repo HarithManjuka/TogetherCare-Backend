@@ -243,6 +243,55 @@ const loginUser = async (req, res) => {
       });
     }
 
+    // Ban Enforcement Check
+    if (user.isBanned) {
+      if (user.banType === 'permanent') {
+        const reasonStr = user.banReason ? ` Reason: ${user.banReason}` : '';
+        return res.status(403).json({
+          success: false,
+          isBanned: true,
+          banType: 'permanent',
+          message: `You are banned from TogetherCare Community permanently.${reasonStr}`,
+        });
+      }
+
+      if (user.banType === 'temporary') {
+        const now = new Date();
+        if (user.banExpiresAt && new Date(user.banExpiresAt) > now) {
+          const diffMs = new Date(user.banExpiresAt) - now;
+          const diffHours = diffMs / (1000 * 60 * 60);
+
+          let durationLabel = 'for 1 day';
+          if (diffHours > 24 * 7) {
+            durationLabel = 'for 1 month';
+          } else if (diffHours > 24) {
+            durationLabel = 'for 1 week';
+          }
+
+          const expiryStr = new Date(user.banExpiresAt).toLocaleString('en-US', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+          });
+          const reasonStr = user.banReason ? ` Reason: ${user.banReason}` : '';
+          return res.status(403).json({
+            success: false,
+            isBanned: true,
+            banType: 'temporary',
+            banExpiresAt: user.banExpiresAt,
+            message: `You are banned from TogetherCare Community ${durationLabel} (until ${expiryStr}).${reasonStr}`,
+          });
+        } else {
+          // Ban expired; auto-release
+          user.isBanned = false;
+          user.banType = 'none';
+          user.banExpiresAt = null;
+          user.bannedBy = null;
+          user.banReason = '';
+          await user.save();
+        }
+      }
+    }
+
     const token = generateToken(user._id, user.role, user.customId);
 
     return res.status(200).json({
@@ -265,7 +314,9 @@ const loginUser = async (req, res) => {
 // @access  Private
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id)
+      .populate('linkedCaregiverId', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId')
+      .populate('pendingCaregiverRequests.caregiver', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -455,6 +506,12 @@ const updateUserProfile = async (req, res) => {
       volunteerIdType,
       volunteerIdNumber,
       educationalInstitution,
+      qualifications,
+      yearsOfExperience,
+      specializations,
+      caregiverBio,
+      hourlyRate,
+      availableDays,
     } = req.body;
 
     if (firstName !== undefined) {
@@ -575,6 +632,26 @@ const updateUserProfile = async (req, res) => {
       user.educationalInstitution = String(educationalInstitution).trim();
     }
 
+    // Caregiver professional profile attributes
+    if (qualifications !== undefined && Array.isArray(qualifications)) {
+      user.qualifications = qualifications.map((q) => String(q).trim()).filter(Boolean);
+    }
+    if (yearsOfExperience !== undefined) {
+      user.yearsOfExperience = Math.max(0, Number(yearsOfExperience) || 0);
+    }
+    if (specializations !== undefined && Array.isArray(specializations)) {
+      user.specializations = specializations.map((s) => String(s).trim()).filter(Boolean);
+    }
+    if (caregiverBio !== undefined) {
+      user.caregiverBio = String(caregiverBio).trim();
+    }
+    if (hourlyRate !== undefined) {
+      user.hourlyRate = Math.max(0, Number(hourlyRate) || 0);
+    }
+    if (availableDays !== undefined && Array.isArray(availableDays)) {
+      user.availableDays = availableDays.map((d) => String(d).trim()).filter(Boolean);
+    }
+
     await user.save();
 
     return res.status(200).json({
@@ -587,6 +664,82 @@ const updateUserProfile = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error updating profile',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Add a professional certification to caregiver profile (Sprint 1)
+// @route   POST /api/auth/certifications
+// @access  Private (Caregiver)
+const addCaregiverCertification = async (req, res) => {
+  try {
+    const { title, issuingOrganization, issueDate, expiryDate, certificateNumber } = req.body;
+
+    if (!title || !issuingOrganization) {
+      return res.status(400).json({
+        success: false,
+        message: 'Certificate title and issuing organization are required',
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications.push({
+      title: title.trim(),
+      issuingOrganization: issuingOrganization.trim(),
+      issueDate: issueDate ? new Date(issueDate) : null,
+      expiryDate: expiryDate ? new Date(expiryDate) : null,
+      certificateNumber: certificateNumber ? certificateNumber.trim() : '',
+      verificationStatus: 'pending',
+    });
+
+    await user.save();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Certification added successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Add Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error adding certification',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Delete a professional certification from caregiver profile
+// @route   DELETE /api/auth/certifications/:id
+// @access  Private (Caregiver)
+const deleteCaregiverCertification = async (req, res) => {
+  try {
+    const certId = req.params.id;
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications = user.certifications.filter((c) => c._id.toString() !== certId);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Certification removed successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Delete Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error deleting certification',
       error: error.message,
     });
   }
@@ -834,24 +987,15 @@ const verifyProfileEmail = async (req, res) => {
 
     user.isEmailVerified = true;
     user.accountStatus = 'active';
+    user.verificationBadgeStatus = 'verified';
     user.emailVerificationOtpHash = undefined;
     user.emailVerificationOtpExpires = undefined;
     await user.save();
 
     return res.status(200).json({
       success: true,
-      message: 'Email address successfully verified!',
-      user: {
-        _id: user._id,
-        customId: user.customId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-      },
+      message: 'Email address successfully verified! Your verified badge is now active.',
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Verify Profile Email Error:', error);
@@ -922,4 +1066,6 @@ module.exports = {
   verifyProfileEmail,
   updateUserVerificationStatus,
   deleteUserAccount,
+  addCaregiverCertification,
+  deleteCaregiverCertification,
 };
