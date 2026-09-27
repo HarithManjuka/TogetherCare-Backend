@@ -170,13 +170,15 @@ describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
         email: `nimal.senior.${Date.now()}@example.com`,
         password: 'Password123!',
         phone: '0719876543',
-        role: 'senior',
+        role: 'elderly',
         dateOfBirth: '1945-05-10',
         gender: 'male',
         address: {
           streetAddress: '12 Temple Road',
           city: 'Colombo 03',
+          postalCode: '00300',
           district: 'Colombo',
+          province: 'Western',
         },
       });
 
