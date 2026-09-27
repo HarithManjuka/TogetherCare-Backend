@@ -1,6 +1,8 @@
 // tests/IT23819092/volunteer_tasks.test.js
 const request = require('supertest');
 const app = require('../../server');
+const HelpRequest = require('../../models/HelpRequest');
+const User = require('../../models/User');
 require('../setup');
 
 describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
@@ -158,6 +160,40 @@ describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
   });
 
   describe('Community Tasks, Scheduling & Completion Workflow', () => {
+    let testSenior;
+    let seededHelpReq;
+
+    beforeEach(async () => {
+      testSenior = await User.create({
+        firstName: 'Nimal',
+        lastName: 'Perera',
+        email: `nimal.senior.${Date.now()}@example.com`,
+        password: 'Password123!',
+        phone: '0719876543',
+        role: 'senior',
+        dateOfBirth: '1945-05-10',
+        gender: 'male',
+        address: {
+          streetAddress: '12 Temple Road',
+          city: 'Colombo 03',
+          district: 'Colombo',
+        },
+      });
+
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 2);
+      const dateStr = tomorrow.toISOString().split('T')[0];
+
+      seededHelpReq = await HelpRequest.create({
+        elderlyId: testSenior._id,
+        serviceType: 'Medicine',
+        date: dateStr,
+        time: '10:00 AM',
+        location: '12 Temple Road, Colombo 03',
+        status: 'searching',
+      });
+    });
+
     it('should browse available community requests', async () => {
       const res = await request(app)
         .get('/api/volunteer-offers/available-requests')
