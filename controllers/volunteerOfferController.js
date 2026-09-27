@@ -409,8 +409,29 @@ exports.getAvailableRequests = async (req, res) => {
     const { category, search } = req.query;
     const todayStr = new Date().toISOString().split('T')[0];
 
+    // 1. Query pending Companionship Requests created by Elders
+    let compQuery = {
+      status: 'pending',
+      volunteer: null,
+      $or: [
+        { scheduledDate: { $gte: new Date(todayStr + 'T00:00:00.000Z') } },
+        { scheduledDate: { $exists: false } },
+        { scheduledDate: null },
+      ],
+    };
+
+    if (category && category !== 'all') {
+      compQuery.activityType = { $regex: category, $options: 'i' };
+    }
+
+    const companionshipRequests = await CompanionshipRequest.find(compQuery)
+      .populate('elderly', 'firstName lastName phone address profilePicture customId')
+      .populate('activityId', 'name icon iconFamily')
+      .sort({ createdAt: -1 });
+
+    // 2. Query open Help Requests created by Elders or Family Caregivers
     let helpQuery = {
-      status: 'searching',
+      status: { $in: ['searching', 'pending'] },
       volunteerId: null,
       $or: [
         { date: { $gte: todayStr } },
@@ -424,137 +445,98 @@ exports.getAvailableRequests = async (req, res) => {
       helpQuery.serviceType = { $regex: category, $options: 'i' };
     }
 
-    let helpRequests = await HelpRequest.find(helpQuery)
-      .populate('elderlyId', 'firstName lastName phone address')
+    const helpRequests = await HelpRequest.find(helpQuery)
+      .populate('elderlyId', 'firstName lastName phone address profilePicture customId')
+      .populate('caregiverId', 'firstName lastName phone')
       .sort({ createdAt: -1 });
 
-    // Auto-seed sample community requests if completely empty, so volunteer dashboard is immediately interactive
-    if (helpRequests.length === 0 && (!category || category === 'all')) {
-      let elderlyUser = await User.findOne({ role: 'elderly' });
-      if (!elderlyUser) {
-        elderlyUser = await User.create({
-          customId: 'ELD-0999',
-          firstName: 'Sunethra',
-          lastName: 'Perera',
-          email: 'perera.elder@togethercare.org',
-          password: 'Password123!',
-          phone: '0771234567',
-          role: 'elderly',
-          dateOfBirth: new Date('1952-04-10'),
-          address: {
-            streetAddress: 'No. 42, Galle Road',
-            city: 'Colombo 03',
-            postalCode: '00300',
-            district: 'Colombo',
-            province: 'Western',
-          },
-          accountStatus: 'active',
-        });
-      }
+    const formattedComp = companionshipRequests.map((cr) => {
+      const elder = cr.elderly || {};
+      const cat = (cr.activityType || '').toLowerCase();
+      const dateStr = cr.scheduledDate
+        ? new Date(cr.scheduledDate).toISOString().split('T')[0]
+        : todayStr;
 
-      let caregiverUser = await User.findOne({ role: 'caregiver' });
-      if (!caregiverUser) {
-        caregiverUser = await User.create({
-          customId: 'CRG-0999',
-          firstName: 'Anura',
-          lastName: 'Perera',
-          email: 'anura.caregiver@togethercare.org',
-          password: 'Password123!',
-          phone: '0777654321',
-          role: 'caregiver',
-          dateOfBirth: new Date('1980-08-15'),
-          address: {
-            streetAddress: 'No. 42, Galle Road',
-            city: 'Colombo 03',
-            postalCode: '00300',
-            district: 'Colombo',
-            province: 'Western',
-          },
-          accountStatus: 'active',
-        });
-      }
+      const elderAddr = elder.address
+        ? (typeof elder.address === 'string'
+            ? elder.address
+            : [elder.address.streetAddress, elder.address.city, elder.address.district].filter(Boolean).join(', '))
+        : 'Colombo';
 
-      const todayStr = new Date().toISOString().split('T')[0];
-      await HelpRequest.create([
-        {
-          caregiverId: caregiverUser._id,
-          elderlyId: elderlyUser._id,
-          serviceType: 'Grocery',
-          date: todayStr,
-          time: '02:30 PM',
-          location: 'No. 42, Galle Road, Colombo 03',
-          status: 'searching',
-          feedback: '',
-        },
-        {
-          caregiverId: caregiverUser._id,
-          elderlyId: elderlyUser._id,
-          serviceType: 'Medicine',
-          date: todayStr,
-          time: '04:00 PM',
-          location: 'No. 18, Flower Road, Colombo 07',
-          status: 'searching',
-          feedback: '',
-        },
-        {
-          caregiverId: caregiverUser._id,
-          elderlyId: elderlyUser._id,
-          serviceType: 'Companionship',
-          date: todayStr,
-          time: '10:00 AM',
-          location: 'No. 5, Havelock Road, Colombo 05',
-          status: 'searching',
-          feedback: '',
-        },
-      ]);
+      return {
+        id: cr._id.toString(),
+        _id: cr._id.toString(),
+        type: `${cr.activityType || 'Companionship'} Visit`,
+        serviceType: cr.activityType || 'Companionship',
+        category: cat.includes('med')
+          ? 'medical'
+          : cat.includes('grocer')
+          ? 'grocery'
+          : cat.includes('walk')
+          ? 'walk'
+          : cat.includes('read')
+          ? 'reading'
+          : 'companionship',
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        elderPhone: elder.phone || '',
+        distance: '1.2 km',
+        duration: '1-2 hrs',
+        badge: 'Open',
+        badgeType: 'today',
+        address: cr.location || elderAddr || 'Colombo',
+        date: dateStr,
+        time: cr.timeSlot || `${cr.startTime || '09:00 AM'} - ${cr.endTime || '11:00 AM'}`,
+        items: cr.activityType ? [cr.activityType] : ['Companionship'],
+        notes: cr.notes || '',
+        communicationMethod: cr.communicationMethod || 'in_person',
+        status: cr.status,
+        source: 'companionship',
+        createdAt: cr.createdAt,
+      };
+    });
 
-      helpRequests = await HelpRequest.find(helpQuery)
-        .populate('elderlyId', 'firstName lastName phone address')
-        .sort({ createdAt: -1 });
-    }
-
-    const formatted = helpRequests.map((hr) => {
+    const formattedHelp = helpRequests.map((hr) => {
       const elder = hr.elderlyId || {};
       const cat = (hr.serviceType || '').toLowerCase();
-      let icon = 'cart-outline';
-      let emoji = '🛒';
-      let defaultItems = ['Fresh Milk (2L)', 'Bread', 'Eggs (12 Pack)', 'Bananas (1kg)'];
 
-      if (cat.includes('med') || cat.includes('pharm')) {
-        icon = 'medical-outline';
-        emoji = '💊';
-        defaultItems = ['Prescription Blood Pressure Pills', 'Eye Drops (Refresh Tears)'];
-      } else if (cat.includes('comp') || cat.includes('walk') || cat.includes('chat')) {
-        icon = 'heart-outline';
-        emoji = '🤝';
-        defaultItems = ['Friendly conversation', 'Walk in community garden'];
-      }
+      const elderAddr = elder.address
+        ? (typeof elder.address === 'string'
+            ? elder.address
+            : [elder.address.streetAddress, elder.address.city, elder.address.district].filter(Boolean).join(', '))
+        : 'Colombo';
 
       return {
         id: hr._id.toString(),
         _id: hr._id.toString(),
-        type: `${hr.serviceType} Assistance`,
-        serviceType: hr.serviceType,
+        type: `${hr.serviceType || 'Assistance'} Help`,
+        serviceType: hr.serviceType || 'Help',
         category: cat.includes('med') ? 'medical' : cat.includes('grocer') ? 'grocery' : 'companionship',
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
-        elderPhone: elder.phone || '077 123 4567',
+        elderPhone: elder.phone || '',
         distance: '1.2 km',
         duration: '45 min',
         badge: hr.serviceType === 'Medicine' ? 'Urgent' : 'Today',
         badgeType: hr.serviceType === 'Medicine' ? 'urgent' : 'today',
-        address: hr.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
-        date: hr.date,
-        time: hr.time,
-        items: defaultItems,
-        notes: `Assistance requested for ${hr.serviceType}. Please arrive on time.`,
+        address: hr.location || elderAddr || 'Colombo',
+        date: hr.date || todayStr,
+        time: hr.time || '10:00 AM',
+        items: hr.items && hr.items.length > 0 ? hr.items : (hr.serviceType ? [hr.serviceType] : []),
+        notes: hr.feedback || hr.notes || '',
         status: hr.status,
+        source: 'help_request',
+        createdAt: hr.createdAt,
       };
+    });
+
+    // Combine all active elder requests and sort newest on top
+    const allFormatted = [...formattedComp, ...formattedHelp].sort((a, b) => {
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
     });
 
     res.status(200).json({
       success: true,
-      count: formatted.length,
-      data: formatted,
+      count: allFormatted.length,
+      data: allFormatted,
     });
   } catch (error) {
     console.error('Get Available Requests Error:', error);
@@ -572,6 +554,8 @@ exports.getAvailableRequests = async (req, res) => {
 exports.acceptRequest = async (req, res) => {
   try {
     const requestId = req.params.id;
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
     let request = await HelpRequest.findById(requestId);
 
     if (!request) {
@@ -584,19 +568,34 @@ exports.acceptRequest = async (req, res) => {
         compReq.volunteer = req.user._id;
         compReq.acceptedBy = req.user._id;
         compReq.acceptedAt = new Date();
-        compReq.companionName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+        compReq.companionName = volunteerName;
         compReq.status = 'accepted';
         await compReq.save();
+
+        // Notify the elderly user
+        if (compReq.elderly) {
+          const dateStr = compReq.scheduledDate ? new Date(compReq.scheduledDate).toISOString().split('T')[0] : 'Upcoming';
+          await createNotification({
+            recipient: compReq.elderly,
+            sender: req.user._id,
+            senior: compReq.elderly,
+            type: 'visit_approved',
+            title: 'Volunteer Accepted Your Request! 🤝',
+            message: `${volunteerName} has accepted your companionship request for ${compReq.activityType} on ${dateStr} (${compReq.timeSlot}).`,
+            data: { requestId: compReq._id, date: dateStr, time: compReq.timeSlot },
+          });
+        }
+
         return res.status(200).json({
           success: true,
-          message: 'Request accepted successfully!',
+          message: 'Companionship request accepted successfully!',
           data: compReq,
         });
       }
       return res.status(404).json({ success: false, message: 'Request not found' });
     }
 
-    if (request.status !== 'searching') {
+    if (request.status !== 'searching' && request.status !== 'pending') {
       return res.status(400).json({
         success: false,
         message: 'This request is no longer open for acceptance',
@@ -628,7 +627,6 @@ exports.acceptRequest = async (req, res) => {
     await request.save();
 
     // Send notifications to caregiver and senior
-    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
     if (request.caregiverId) {
       await createNotification({
         recipient: request.caregiverId,
@@ -653,7 +651,7 @@ exports.acceptRequest = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'You have successfully accepted this request!',
       data: request,
