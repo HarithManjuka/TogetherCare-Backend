@@ -194,6 +194,56 @@ const UserSchema = new mongoose.Schema(
       enum: ['unverified', 'pending', 'verified', 'rejected'],
       default: 'unverified',
     },
+    volunteerVerification: {
+      status: {
+        type: String,
+        enum: ['UNVERIFIED', 'PENDING', 'APPROVED', 'REJECTED'],
+        default: 'UNVERIFIED',
+      },
+      credentialType: {
+        type: String,
+        enum: ['NIC', 'Student ID', 'Passport', 'None'],
+        default: 'None',
+      },
+      credentialNumber: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      evidenceFiles: [
+        {
+          url: { type: String, required: true },
+          publicId: { type: String },
+          fileType: { type: String, enum: ['image', 'pdf'], required: true },
+          documentCategory: {
+            type: String,
+            enum: ['nic_front', 'nic_back', 'student_id_front', 'passport_bio', 'document_pdf', 'general_evidence'],
+            default: 'general_evidence',
+          },
+          originalName: { type: String },
+          fileSize: { type: Number }, // in bytes
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
+      rejectionReason: {
+        type: String,
+        default: '',
+      },
+      submittedAt: {
+        type: Date,
+      },
+      reviewedAt: {
+        type: Date,
+      },
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    },
+    isVolunteerVerified: {
+      type: Boolean,
+      default: false,
+    },
 
     // Caregiver specific
     relationshipToElderly: { type: String, default: '' },

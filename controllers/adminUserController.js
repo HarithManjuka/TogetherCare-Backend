@@ -441,6 +441,62 @@ const unbanUser = async (req, res) => {
   }
 };
 
+// @desc    Admin Approve or Reject Volunteer Verification
+// @route   PUT /api/admin/users/:id/verify-volunteer
+// @access  Private (Admin only)
+const reviewVolunteerVerification = async (req, res) => {
+  try {
+    const { action, rejectionReason } = req.body;
+    const targetUser = await User.findById(req.params.id);
+
+    if (!targetUser) {
+      return res.status(404).json({ status: 'fail', message: 'User not found' });
+    }
+
+    if (targetUser.role !== 'volunteer') {
+      return res.status(400).json({ status: 'fail', message: 'This user is not a volunteer.' });
+    }
+
+    if (!targetUser.volunteerVerification) {
+      targetUser.volunteerVerification = {};
+    }
+
+    if (action === 'approve') {
+      targetUser.volunteerVerification.status = 'APPROVED';
+      targetUser.volunteerVerification.rejectionReason = '';
+      targetUser.volunteerVerification.reviewedAt = new Date();
+      targetUser.volunteerVerification.reviewedBy = req.user._id;
+      targetUser.isVolunteerVerified = true;
+      targetUser.verificationBadgeStatus = 'verified';
+    } else if (action === 'reject') {
+      if (!rejectionReason || !rejectionReason.trim()) {
+        return res.status(400).json({ status: 'fail', message: 'Rejection reason is required.' });
+      }
+      targetUser.volunteerVerification.status = 'REJECTED';
+      targetUser.volunteerVerification.rejectionReason = rejectionReason.trim();
+      targetUser.volunteerVerification.reviewedAt = new Date();
+      targetUser.volunteerVerification.reviewedBy = req.user._id;
+      targetUser.isVolunteerVerified = false;
+      targetUser.verificationBadgeStatus = 'rejected';
+    } else {
+      return res.status(400).json({ status: 'fail', message: 'Invalid action. Must be approve or reject.' });
+    }
+
+    await targetUser.save();
+
+    res.status(200).json({
+      status: 'success',
+      message: `Volunteer verification ${action === 'approve' ? 'approved' : 'rejected'} successfully.`,
+      data: {
+        user: targetUser,
+      },
+    });
+  } catch (error) {
+    console.error('Error in reviewVolunteerVerification:', error);
+    res.status(500).json({ status: 'error', message: error.message || 'Server error' });
+  }
+};
+
 module.exports = {
   getAdminUsers,
   getAdminUserDetails,
@@ -448,4 +504,5 @@ module.exports = {
   updateAdminUserDetails,
   banUser,
   unbanUser,
+  reviewVolunteerVerification,
 };

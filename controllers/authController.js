@@ -1051,6 +1051,81 @@ const deleteUserAccount = async (req, res) => {
   }
 };
 
+// @desc    Submit Volunteer Verification Evidence
+// @route   POST /api/auth/volunteer-verification
+// @access  Private (Volunteer only)
+const submitVolunteerVerification = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ status: 'fail', message: 'User not found' });
+    }
+
+    if (user.role !== 'volunteer') {
+      return res.status(403).json({ status: 'fail', message: 'Only volunteers can submit verification evidence.' });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ status: 'fail', message: 'Please attach at least one piece of evidence (PDF or picture).' });
+    }
+
+    const { credentialType, credentialNumber, categories } = req.body;
+    let parsedCategories = [];
+    try {
+      parsedCategories = categories ? (typeof categories === 'string' ? JSON.parse(categories) : categories) : [];
+    } catch {
+      parsedCategories = [];
+    }
+
+    // Map uploaded files from Cloudinary
+    const uploadedEvidence = req.files.map((file, index) => {
+      const isPdf = file.mimetype === 'application/pdf';
+      return {
+        url: file.path || file.secure_url,
+        publicId: file.filename,
+        fileType: isPdf ? 'pdf' : 'image',
+        documentCategory: parsedCategories[index] || (isPdf ? 'document_pdf' : 'general_evidence'),
+        originalName: file.originalname,
+        fileSize: file.size,
+        uploadedAt: new Date(),
+      };
+    });
+
+    user.volunteerVerification = {
+      status: 'PENDING',
+      credentialType: credentialType || user.volunteerVerification?.credentialType || 'None',
+      credentialNumber: credentialNumber || user.volunteerVerification?.credentialNumber || '',
+      evidenceFiles: uploadedEvidence,
+      rejectionReason: '',
+      submittedAt: new Date(),
+    };
+
+    // Keep legacy flag and badge status in sync
+    user.isVolunteerVerified = false;
+    user.verificationBadgeStatus = 'pending';
+    if (credentialType && ['NIC', 'Student ID', 'Passport'].includes(credentialType)) {
+      user.volunteerIdType = credentialType;
+    }
+    if (credentialNumber) {
+      user.volunteerIdNumber = credentialNumber;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Evidence submitted successfully. Your verification status is now PENDING review.',
+      data: {
+        volunteerVerification: user.volunteerVerification,
+      },
+    });
+  } catch (error) {
+    console.error('Error in submitVolunteerVerification:', error);
+    res.status(500).json({ status: 'error', message: error.message || 'Server Error' });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -1068,4 +1143,5 @@ module.exports = {
   deleteUserAccount,
   addCaregiverCertification,
   deleteCaregiverCertification,
+  submitVolunteerVerification,
 };
