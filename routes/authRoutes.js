@@ -18,9 +18,11 @@ const {
   deleteUserAccount,
   addCaregiverCertification,
   deleteCaregiverCertification,
+  submitVolunteerVerification,
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
+const { handleEvidenceUpload } = require('../middleware/evidenceUploadMiddleware');
 
 // Public auth routes
 router.post('/register', registerUser);
@@ -34,6 +36,14 @@ router.delete('/users/:id', protect, authorize('admin'), deleteUserAccount);
 router.put('/profile', protect, updateUserProfile);
 router.post('/certifications', protect, addCaregiverCertification);
 router.delete('/certifications/:id', protect, deleteCaregiverCertification);
+
+// Volunteer verification route
+router.post(
+  '/volunteer-verification',
+  protect,
+  handleEvidenceUpload,
+  submitVolunteerVerification
+);
 
 // Email Verification Flow
 router.post('/send-email-verification-otp', protect, sendEmailVerificationOtp);
