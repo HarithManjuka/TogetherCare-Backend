@@ -5,6 +5,7 @@ const {
   createOffer,
   getMyOffers,
   getAllOffers,
+  acceptOffer,
   updateOffer,
   deleteOffer,
   getAvailableRequests,
@@ -34,6 +35,7 @@ router.get('/my-history', protect, getMyHistory);
 router.get('/my-stats', protect, getMyStats);
 
 // Offer operations by ID
+router.post('/:id/accept', protect, acceptOffer);
 router.route('/:id')
   .put(protect, updateOffer)
   .delete(protect, deleteOffer);

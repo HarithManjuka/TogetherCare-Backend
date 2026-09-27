@@ -297,6 +297,53 @@ const getOpenRequests = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Update status of companionship visit (accepted -> ongoing -> completed / cancelled)
+ * @route   PUT /api/companionship/:id/status
+ * @access  Private
+ */
+const updateStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const allowed = ['pending', 'accepted', 'scheduled', 'ongoing', 'arrived', 'completed', 'cancelled'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status',
+      });
+    }
+
+    const request = await CompanionshipRequest.findOne({
+      _id: id,
+      $or: [{ elderly: req.user._id }, { volunteer: req.user._id }],
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Companionship request not found or not authorized',
+      });
+    }
+
+    request.status = status;
+    await request.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Companionship visit status updated to ${status}`,
+      data: request,
+    });
+  } catch (error) {
+    console.error('Error updating companionship status:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while updating status',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getUpcomingVisits,
   getMyRequests,
@@ -305,6 +352,7 @@ module.exports = {
   cancelRequest,
   updateRequest,
   deleteRequest,
+  updateStatus,
 };
 
 
