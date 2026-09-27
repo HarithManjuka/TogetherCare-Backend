@@ -126,7 +126,19 @@ exports.getMyOffers = async (req, res) => {
 exports.getAllOffers = async (req, res) => {
   try {
     const { service, location } = req.query;
-    let query = { slotsLeft: { $gt: 0 }, status: { $in: ['pending', 'active'] } };
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // Filter out past/outdated offers that are not accepted, only show active current/future dates
+    let query = {
+      slotsLeft: { $gt: 0 },
+      status: { $in: ['pending', 'active'] },
+      $or: [
+        { date: { $gte: todayStr } },
+        { date: { $exists: false } },
+        { date: null },
+        { date: '' },
+      ],
+    };
 
     if (service && service !== 'All') {
       query.services = { $in: [service] };
@@ -135,9 +147,10 @@ exports.getAllOffers = async (req, res) => {
       query.serviceArea = { $regex: location.trim(), $options: 'i' };
     }
 
+    // Newest posted offers on top
     const offers = await VolunteerOffer.find(query)
       .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus isEmailVerified age educationalInstitution bio rating address interests')
-      .sort({ date: 1, createdAt: -1 });
+      .sort({ createdAt: -1, date: 1 });
 
     res.status(200).json({
       success: true,
@@ -202,6 +215,26 @@ exports.acceptOffer = async (req, res) => {
       notes: `Accepted from Volunteer Offer. Services: ${offer.services.join(', ')}. ${offer.specialSkills ? `Note: ${offer.specialSkills}` : ''}`.trim(),
       status: 'accepted',
     });
+
+    // Send notification to volunteer
+    try {
+      const { createNotification } = require('./notificationController');
+      const elderName = `${req.user.firstName || 'Elder'} ${req.user.lastName || ''}`.trim();
+      const volunteerId = offer.volunteerId._id || offer.volunteerId;
+      if (volunteerId) {
+        await createNotification({
+          recipient: volunteerId,
+          sender: req.user._id,
+          senior: req.user._id,
+          type: 'visit_approved',
+          title: 'New Visit Booked! 🤝',
+          message: `${elderName} has booked a ${primaryService} visit with you on ${offer.date} (${offer.startTime} - ${offer.endTime}).`,
+          data: { companionshipId: companionship._id, date: offer.date, location: offer.serviceArea },
+        });
+      }
+    } catch (notifErr) {
+      console.warn('Could not send notification for accepted offer:', notifErr.message);
+    }
 
     res.status(200).json({
       success: true,
@@ -374,8 +407,19 @@ const getServiceAliases = (serviceType) => {
 exports.getAvailableRequests = async (req, res) => {
   try {
     const { category, search } = req.query;
+    const todayStr = new Date().toISOString().split('T')[0];
 
-    let helpQuery = { status: 'searching', volunteerId: null };
+    let helpQuery = {
+      status: 'searching',
+      volunteerId: null,
+      $or: [
+        { date: { $gte: todayStr } },
+        { date: { $exists: false } },
+        { date: null },
+        { date: '' },
+      ],
+    };
+
     if (category && category !== 'all') {
       helpQuery.serviceType = { $regex: category, $options: 'i' };
     }
