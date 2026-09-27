@@ -276,8 +276,8 @@ const createRequest = async (req, res) => {
 const getOpenRequests = async (req, res) => {
   try {
     const openRequests = await CompanionshipRequest.find({
-      status: 'pending',
-      volunteer: null,
+      status: { $in: ['pending', 'open'] },
+      $or: [{ volunteer: null }, { volunteer: { $exists: false } }],
     })
       .populate('elderly', 'firstName lastName profilePicture phone address')
       .sort({ scheduledDate: 1, createdAt: -1 });
@@ -306,5 +306,4 @@ module.exports = {
   updateRequest,
   deleteRequest,
 };
-
 
