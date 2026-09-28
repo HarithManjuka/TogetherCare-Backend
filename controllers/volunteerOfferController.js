@@ -757,6 +757,8 @@ exports.updateTaskStatus = async (req, res) => {
       });
     }
 
+    const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+
     let request = await HelpRequest.findById(req.params.id);
     if (!request) {
       let compReq = await CompanionshipRequest.findById(req.params.id);
@@ -765,7 +767,51 @@ exports.updateTaskStatus = async (req, res) => {
           return res.status(403).json({ success: false, message: 'Not authorized for this task' });
         }
         compReq.status = status === 'arrived' ? 'ongoing' : status;
+        if (status === 'cancelled') {
+          compReq.volunteer = null;
+          compReq.acceptedBy = null;
+        }
         await compReq.save();
+
+        // Notify elder
+        if (compReq.elderly) {
+          try {
+            if (status === 'cancelled') {
+              await createNotification({
+                recipient: compReq.elderly,
+                sender: req.user._id,
+                senior: compReq.elderly,
+                type: 'visit_cancelled',
+                title: 'Volunteer Cancelled Visit ⚠️',
+                message: `${volunteerName} had to cancel their scheduled visit for ${compReq.activityType || 'companionship'}.`,
+                data: { requestId: compReq._id, status: 'cancelled' },
+              });
+            } else if (status === 'ongoing' || status === 'arrived') {
+              await createNotification({
+                recipient: compReq.elderly,
+                sender: req.user._id,
+                senior: compReq.elderly,
+                type: 'visit_started',
+                title: 'Volunteer On The Way / Arrived 🚗',
+                message: `${volunteerName} has started / arrived for your ${compReq.activityType} visit.`,
+                data: { requestId: compReq._id, status: compReq.status },
+              });
+            } else if (status === 'completed') {
+              await createNotification({
+                recipient: compReq.elderly,
+                sender: req.user._id,
+                senior: compReq.elderly,
+                type: 'visit_completed',
+                title: 'Visit Completed! 🎉',
+                message: `${volunteerName} has completed the ${compReq.activityType} visit.`,
+                data: { requestId: compReq._id, status: 'completed' },
+              });
+            }
+          } catch (notifErr) {
+            console.error('Failed to send notification to elder:', notifErr);
+          }
+        }
+
         return res.status(200).json({
           success: true,
           message: `Task status updated to ${status}`,
@@ -801,6 +847,60 @@ exports.updateTaskStatus = async (req, res) => {
     }
 
     await request.save();
+
+    // Send notifications to elder and caregiver
+    try {
+      if (status === 'cancelled') {
+        if (request.elderlyId) {
+          await createNotification({
+            recipient: request.elderlyId,
+            sender: req.user._id,
+            senior: request.elderlyId,
+            type: 'visit_cancelled',
+            title: 'Volunteer Cancelled Visit ⚠️',
+            message: `${volunteerName} had to cancel the ${request.serviceType || 'assistance'} visit.`,
+            data: { requestId: request._id, status: 'cancelled' },
+          });
+        }
+        if (request.caregiverId) {
+          await createNotification({
+            recipient: request.caregiverId,
+            sender: req.user._id,
+            senior: request.elderlyId,
+            type: 'visit_cancelled',
+            title: 'Volunteer Cancelled Visit ⚠️',
+            message: `${volunteerName} had to cancel the ${request.serviceType || 'assistance'} visit.`,
+            data: { requestId: request._id, status: 'cancelled' },
+          });
+        }
+      } else if (status === 'arrived' || status === 'ongoing') {
+        if (request.elderlyId) {
+          await createNotification({
+            recipient: request.elderlyId,
+            sender: req.user._id,
+            senior: request.elderlyId,
+            type: 'visit_started',
+            title: 'Volunteer Arrived 🚗',
+            message: `${volunteerName} has arrived for the ${request.serviceType} visit.`,
+            data: { requestId: request._id, status },
+          });
+        }
+      } else if (status === 'completed') {
+        if (request.elderlyId) {
+          await createNotification({
+            recipient: request.elderlyId,
+            sender: req.user._id,
+            senior: request.elderlyId,
+            type: 'visit_completed',
+            title: 'Visit Completed! 🎉',
+            message: `${volunteerName} has completed the ${request.serviceType} visit.`,
+            data: { requestId: request._id, status: 'completed' },
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error('Failed to send task status notifications:', notifErr);
+    }
 
     res.status(200).json({
       success: true,

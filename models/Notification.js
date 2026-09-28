@@ -27,6 +27,8 @@ const NotificationSchema = new mongoose.Schema(
         'visit_requested',
         'visit_accepted',
         'visit_declined',
+        'visit_cancelled',
+        'visit_status_update',
         'trip_started',
         'visit_approved',
         'visit_started',
