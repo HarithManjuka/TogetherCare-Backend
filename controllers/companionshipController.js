@@ -151,7 +151,8 @@ const updateRequest = async (req, res) => {
     if (endTime) request.endTime = endTime;
     if (timeSlot) request.timeSlot = timeSlot;
     if (communicationMethod) request.communicationMethod = communicationMethod;
-    if (notes) request.notes = notes;
+    if (location !== undefined) request.location = location;
+    if (notes !== undefined) request.notes = notes;
 
     await request.save();
 
