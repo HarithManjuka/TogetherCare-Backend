@@ -1,5 +1,6 @@
 // controllers/companionshipController.js
 const CompanionshipRequest = require('../models/CompanionshipRequest');
+const { createNotification } = require('./notificationController');
 
 /**
  * @desc    Get upcoming companionship visits for logged-in elderly user
@@ -42,7 +43,7 @@ const getMyRequests = async (req, res) => {
   try {
     const userId = req.user._id;
     const requests = await CompanionshipRequest.find({ elderly: userId })
-      .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus')
+      .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus rating bio address')
       .populate('activityId', 'name icon iconFamily')
       .sort({ scheduledDate: -1, createdAt: -1 });
 
@@ -69,27 +70,80 @@ const getMyRequests = async (req, res) => {
 const cancelRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await CompanionshipRequest.findOne({
+    let request = await CompanionshipRequest.findOne({
       _id: id,
       elderly: req.user._id,
     });
 
-    if (!request) {
-      return res.status(404).json({
-        success: false,
-        message: 'Companionship request not found',
+    let serviceName = 'Companionship';
+    let volunteerRecipient = null;
+    let scheduledDateStr = 'Upcoming';
+    let timeSlotStr = '';
+
+    if (request) {
+      if (request.status === 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot cancel a completed visit',
+        });
+      }
+      request.status = 'cancelled';
+      await request.save();
+
+      serviceName = request.activityType || 'Companionship';
+      volunteerRecipient = request.volunteer ? (request.volunteer._id || request.volunteer) : null;
+      scheduledDateStr = request.scheduledDate
+        ? new Date(request.scheduledDate).toISOString().split('T')[0]
+        : 'Upcoming';
+      timeSlotStr = request.timeSlot || '';
+    } else {
+      // Fallback: Check if it's stored in HelpRequest
+      const HelpRequest = require('../models/HelpRequest');
+      request = await HelpRequest.findOne({
+        _id: id,
+        elderlyId: req.user._id,
       });
+
+      if (!request) {
+        return res.status(404).json({
+          success: false,
+          message: 'Request not found',
+        });
+      }
+
+      if (request.status === 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot cancel a completed visit',
+        });
+      }
+
+      request.status = 'cancelled';
+      await request.save();
+
+      serviceName = request.serviceType || 'Assistance';
+      volunteerRecipient = request.volunteerId ? (request.volunteerId._id || request.volunteerId) : null;
+      scheduledDateStr = request.date || 'Upcoming';
+      timeSlotStr = request.time || '';
     }
 
-    if (request.status === 'completed') {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot cancel a completed visit',
-      });
+    // Send notification to volunteer if one was assigned
+    if (volunteerRecipient) {
+      try {
+        const elderName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+        await createNotification({
+          recipient: volunteerRecipient,
+          sender: req.user._id,
+          senior: req.user._id,
+          type: 'visit_cancelled',
+          title: 'Scheduled Visit Cancelled ⚠️',
+          message: `${elderName} has cancelled the scheduled visit for ${serviceName} on ${scheduledDateStr} (${timeSlotStr}).`,
+          data: { requestId: request._id, date: scheduledDateStr, time: timeSlotStr },
+        });
+      } catch (notifErr) {
+        console.error('Failed to send visit_cancelled notification:', notifErr);
+      }
     }
-
-    request.status = 'cancelled';
-    await request.save();
 
     return res.status(200).json({
       success: true,
@@ -329,6 +383,62 @@ const updateStatus = async (req, res) => {
 
     request.status = status;
     await request.save();
+
+    // Send notification to counterpart user
+    const elderId = request.elderly || request.elderlyId;
+    const volunteerId = request.volunteer || request.volunteerId;
+    const isElder = req.user._id.toString() === elderId?.toString();
+    const recipientId = isElder ? (volunteerId?._id || volunteerId) : (elderId?._id || elderId);
+
+    if (recipientId) {
+      try {
+        const senderName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+        const activity = request.activityType || request.serviceType || 'Visit';
+        const dateStr = request.scheduledDate
+          ? new Date(request.scheduledDate).toISOString().split('T')[0]
+          : request.date || 'Upcoming';
+
+        if (status === 'ongoing') {
+          await createNotification({
+            recipient: recipientId,
+            sender: req.user._id,
+            senior: elderId,
+            type: 'visit_status_update',
+            title: isElder ? 'Elder Started Visit 🚀' : 'Volunteer Arrived / Ongoing 🚀',
+            message: isElder
+              ? `${senderName} marked the ${activity} visit as ongoing.`
+              : `Volunteer ${senderName} has started the ${activity} visit.`,
+            data: { requestId: request._id, status: 'ongoing' },
+          });
+        } else if (status === 'completed') {
+          await createNotification({
+            recipient: recipientId,
+            sender: req.user._id,
+            senior: elderId,
+            type: 'visit_completed',
+            title: 'Visit Completed! 🎉',
+            message: isElder
+              ? `${senderName} marked the ${activity} visit as completed. Thank you!`
+              : `Volunteer ${senderName} has finished the ${activity} visit.`,
+            data: { requestId: request._id, status: 'completed' },
+          });
+        } else if (status === 'cancelled') {
+          await createNotification({
+            recipient: recipientId,
+            sender: req.user._id,
+            senior: elderId,
+            type: 'visit_cancelled',
+            title: 'Scheduled Visit Cancelled ⚠️',
+            message: isElder
+              ? `${senderName} has cancelled the scheduled visit for ${activity} on ${dateStr}.`
+              : `Volunteer ${senderName} has cancelled the visit for ${activity}.`,
+            data: { requestId: request._id, status: 'cancelled', date: dateStr },
+          });
+        }
+      } catch (notifErr) {
+        console.error('Failed to send status update notification:', notifErr);
+      }
+    }
 
     return res.status(200).json({
       success: true,

@@ -161,26 +161,56 @@ describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
 
   describe('Community Tasks, Scheduling & Completion Workflow', () => {
     let testSenior;
+    let testCaregiver;
     let seededHelpReq;
 
     beforeEach(async () => {
-      testSenior = await User.create({
-        firstName: 'Nimal',
-        lastName: 'Perera',
-        email: `nimal.senior.${Date.now()}@example.com`,
-        password: 'Password123!',
-        phone: '0719876543',
-        role: 'elderly',
-        dateOfBirth: '1945-05-10',
-        gender: 'male',
-        address: {
-          streetAddress: '12 Temple Road',
-          city: 'Colombo 03',
-          postalCode: '00300',
-          district: 'Colombo',
-          province: 'Western',
-        },
-      });
+      const ts = Date.now();
+      const randPhone1 = `071${Math.floor(1000000 + Math.random() * 9000000)}`;
+      const randPhone2 = `077${Math.floor(1000000 + Math.random() * 9000000)}`;
+
+      const seniorRes = await request(app)
+        .post('/api/auth/register')
+        .send({
+          firstName: 'Nimal',
+          lastName: 'Perera',
+          email: `nimal.senior.${ts}.${Math.random()}@example.com`,
+          password: 'Password123!',
+          phone: randPhone1,
+          role: 'elderly',
+          dateOfBirth: '1945-05-10',
+          gender: 'male',
+          address: {
+            streetAddress: '12 Temple Road',
+            city: 'Colombo 03',
+            postalCode: '00300',
+            district: 'Colombo',
+            province: 'Western',
+          },
+        });
+      testSenior = seniorRes.body.user;
+
+      const caregiverRes = await request(app)
+        .post('/api/auth/register')
+        .send({
+          firstName: 'Sunil',
+          lastName: 'Perera',
+          email: `sunil.caregiver.${ts}.${Math.random()}@example.com`,
+          password: 'Password123!',
+          phone: randPhone2,
+          role: 'caregiver',
+          caregiverType: 'family_member',
+          dateOfBirth: '1975-05-10',
+          gender: 'male',
+          address: {
+            streetAddress: '12 Temple Road',
+            city: 'Colombo 03',
+            postalCode: '00300',
+            district: 'Colombo',
+            province: 'Western',
+          },
+        });
+      testCaregiver = caregiverRes.body.user;
 
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 2);
@@ -188,6 +218,7 @@ describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
 
       seededHelpReq = await HelpRequest.create({
         elderlyId: testSenior._id,
+        caregiverId: testCaregiver._id,
         serviceType: 'Medicine',
         date: dateStr,
         time: '10:00 AM',
