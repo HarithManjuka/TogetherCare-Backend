@@ -1,6 +1,10 @@
 // controllers/volunteerOfferController.js
 const VolunteerOffer = require('../models/VolunteerOffer');
-const { getVisitTimeWindow, syncAndAutoTransitionVisits } = require('../utils/scheduleHelper');
+const {
+  getVisitTimeWindow,
+  syncAndAutoTransitionVisits,
+  checkElderScheduleOverlap,
+} = require('../utils/scheduleHelper');
 
 // @desc    Create / Post an Offer
 // @route   POST /api/volunteer-offers
@@ -186,6 +190,22 @@ exports.acceptOffer = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'This offer is no longer available or already fully booked',
+      });
+    }
+
+    // Check if the elderly user already has an overlapping active request or scheduled visit
+    const overlapCheck = await checkElderScheduleOverlap(req.user._id, {
+      scheduledDate: offer.date,
+      startTime: offer.startTime || '02:00 PM',
+      endTime: offer.endTime || '04:00 PM',
+      timeSlot: `${offer.startTime || '02:00 PM'} - ${offer.endTime || '04:00 PM'}`,
+    });
+
+    if (overlapCheck.hasConflict) {
+      return res.status(400).json({
+        success: false,
+        message: overlapCheck.message,
+        conflict: true,
       });
     }
 

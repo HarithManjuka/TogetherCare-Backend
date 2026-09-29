@@ -2,7 +2,11 @@
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const HelpRequest = require('../models/HelpRequest');
 const { createNotification } = require('./notificationController');
-const { getVisitTimeWindow, syncAndAutoTransitionVisits } = require('../utils/scheduleHelper');
+const {
+  getVisitTimeWindow,
+  syncAndAutoTransitionVisits,
+  checkElderScheduleOverlap,
+} = require('../utils/scheduleHelper');
 
 /**
  * @desc    Get upcoming companionship visits for logged-in elderly user
@@ -260,6 +264,7 @@ const updateRequest = async (req, res) => {
       startTime,
       endTime,
       communicationMethod,
+      location,
       notes,
     } = req.body;
 
@@ -279,6 +284,31 @@ const updateRequest = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Only pending requests can be edited',
+      });
+    }
+
+    // Check for schedule overlap with other active schedules (excluding this request)
+    const targetDate = scheduledDate || request.scheduledDate;
+    const targetStartTime = startTime || request.startTime;
+    const targetEndTime = endTime || request.endTime;
+    const targetTimeSlot = timeSlot || request.timeSlot;
+
+    const overlapCheck = await checkElderScheduleOverlap(
+      req.user._id,
+      {
+        scheduledDate: targetDate,
+        startTime: targetStartTime,
+        endTime: targetEndTime,
+        timeSlot: targetTimeSlot,
+      },
+      id
+    );
+
+    if (overlapCheck.hasConflict) {
+      return res.status(400).json({
+        success: false,
+        message: overlapCheck.message,
+        conflict: true,
       });
     }
 
@@ -382,6 +412,22 @@ const createRequest = async (req, res) => {
 
     const calculatedTimeSlot =
       timeSlot || (startTime && endTime ? `${startTime} - ${endTime}` : startTime || '02:00 PM - 04:00 PM');
+
+    // Check for overlapping active schedules for this elder
+    const overlapCheck = await checkElderScheduleOverlap(req.user._id, {
+      scheduledDate,
+      startTime,
+      endTime,
+      timeSlot: calculatedTimeSlot,
+    });
+
+    if (overlapCheck.hasConflict) {
+      return res.status(400).json({
+        success: false,
+        message: overlapCheck.message,
+        conflict: true,
+      });
+    }
 
     const newRequest = await CompanionshipRequest.create({
       elderly: req.user._id,
