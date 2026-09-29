@@ -66,7 +66,7 @@ const CompanionshipRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'accepted', 'scheduled', 'ongoing', 'arrived', 'completed', 'cancelled'],
+      enum: ['pending', 'accepted', 'scheduled', 'ongoing', 'arrived', 'completed', 'cancelled', 'expired', 'outdated'],
       default: 'pending',
     },
     location: {
