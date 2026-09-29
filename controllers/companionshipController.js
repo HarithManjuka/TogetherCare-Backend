@@ -1,6 +1,8 @@
 // controllers/companionshipController.js
 const CompanionshipRequest = require('../models/CompanionshipRequest');
+const HelpRequest = require('../models/HelpRequest');
 const { createNotification } = require('./notificationController');
+const { getVisitTimeWindow, syncAndAutoTransitionVisits } = require('../utils/scheduleHelper');
 
 /**
  * @desc    Get upcoming companionship visits for logged-in elderly user
@@ -10,19 +12,57 @@ const { createNotification } = require('./notificationController');
 const getUpcomingVisits = async (req, res) => {
   try {
     const userId = req.user._id;
+    const HelpRequest = require('../models/HelpRequest');
 
-    // Find accepted upcoming visits for the current user from database
-    const visits = await CompanionshipRequest.find({
+    // 1. Find accepted / ongoing companionship visits
+    const compVisits = await CompanionshipRequest.find({
       elderly: userId,
-      status: 'accepted',
+      status: { $in: ['accepted', 'scheduled', 'ongoing'] },
     })
       .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus')
       .sort({ scheduledDate: 1 });
 
+    // 2. Find accepted / ongoing assistance help requests submitted by the elder
+    const helpVisits = await HelpRequest.find({
+      elderlyId: userId,
+      status: { $in: ['confirmed', 'matched', 'ongoing', 'arrived'] },
+    })
+      .populate('volunteerId', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus')
+      .sort({ date: 1, time: 1 });
+
+    // Auto-transition visits based on scheduled time frames
+    await syncAndAutoTransitionVisits([...compVisits, ...helpVisits]);
+
+    // Keep active upcoming & ongoing visits
+    const activeComp = compVisits.filter(
+      (v) => v.status !== 'completed' && v.status !== 'cancelled'
+    );
+
+    const activeHelp = helpVisits
+      .filter((v) => v.status !== 'completed' && v.status !== 'cancelled')
+      .map((hr) => ({
+        _id: hr._id,
+        id: hr._id,
+        activityType: hr.serviceType || 'Elderly Assistance',
+        serviceType: hr.serviceType || 'Elderly Assistance',
+        scheduledDate: hr.date || 'Today',
+        timeSlot: hr.time || '10:00 AM',
+        date: hr.date,
+        time: hr.time,
+        location: hr.location || '',
+        notes: hr.feedback || hr.notes || '',
+        status: hr.status === 'confirmed' || hr.status === 'matched' ? 'accepted' : hr.status,
+        volunteer: hr.volunteerId,
+        companionName: hr.volunteerId ? `${hr.volunteerId.firstName} ${hr.volunteerId.lastName || ''}`.trim() : '',
+        source: 'help_request',
+      }));
+
+    const allVisits = [...activeComp, ...activeHelp];
+
     return res.status(200).json({
       success: true,
-      count: visits.length,
-      data: visits,
+      count: allVisits.length,
+      data: allVisits,
     });
   } catch (error) {
     console.error('Error fetching upcoming visits from database:', error);
@@ -42,15 +82,59 @@ const getUpcomingVisits = async (req, res) => {
 const getMyRequests = async (req, res) => {
   try {
     const userId = req.user._id;
-    const requests = await CompanionshipRequest.find({ elderly: userId })
+    const HelpRequest = require('../models/HelpRequest');
+
+    const compRequests = await CompanionshipRequest.find({ elderly: userId })
       .populate('volunteer', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus rating bio address')
       .populate('activityId', 'name icon iconFamily')
       .sort({ scheduledDate: -1, createdAt: -1 });
 
+    const helpRequests = await HelpRequest.find({ elderlyId: userId })
+      .populate('volunteerId', 'firstName lastName phone email profilePicture isEmailVerified verificationBadgeStatus rating bio address')
+      .sort({ createdAt: -1 });
+
+    // Auto-transition visits based on scheduled time frames (upcoming -> ongoing -> completed, and expire outdated unaccepted requests)
+    await syncAndAutoTransitionVisits([...compRequests, ...helpRequests]);
+
+    const formattedHelp = helpRequests.map((hr) => ({
+      _id: hr._id,
+      id: hr._id,
+      elderly: hr.elderlyId,
+      activityType: hr.serviceType || 'Elderly Assistance',
+      serviceType: hr.serviceType || 'Elderly Assistance',
+      scheduledDate: hr.date || 'Today',
+      timeSlot: hr.time || '10:00 AM',
+      date: hr.date,
+      time: hr.time,
+      location: hr.location || '',
+      notes: hr.feedback || hr.notes || '',
+      communicationMethod: 'in_person',
+      status: hr.status === 'searching' ? 'pending' : (hr.status === 'confirmed' || hr.status === 'matched') ? 'accepted' : hr.status,
+      volunteer: hr.volunteerId,
+      companionName: hr.volunteerId ? `${hr.volunteerId.firstName} ${hr.volunteerId.lastName || ''}`.trim() : '',
+      source: 'help_request',
+      createdAt: hr.createdAt,
+    }));
+
+    const rawList = [...compRequests, ...formattedHelp].sort((a, b) => {
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
+
+    // Deduplicate by string ID
+    const seenIds = new Set();
+    const allSchedules = [];
+    for (const item of rawList) {
+      const idStr = (item._id || item.id)?.toString();
+      if (idStr && !seenIds.has(idStr)) {
+        seenIds.add(idStr);
+        allSchedules.push(item);
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      count: requests.length,
-      data: requests,
+      count: allSchedules.length,
+      data: allSchedules,
     });
   } catch (error) {
     console.error('Error fetching schedules from database:', error);
@@ -226,33 +310,41 @@ const updateRequest = async (req, res) => {
 };
 
 /**
- * @desc    Delete a pending companionship request (by elderly user)
+ * @desc    Delete a pending companionship / help request (by elderly user)
  * @route   DELETE /api/companionship/:id
  * @access  Private
  */
 const deleteRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await CompanionshipRequest.findOneAndDelete({
+    let request = await CompanionshipRequest.findOneAndDelete({
       _id: id,
       elderly: req.user._id,
       status: 'pending',
     });
 
     if (!request) {
+      request = await HelpRequest.findOneAndDelete({
+        _id: id,
+        elderlyId: req.user._id,
+        status: { $in: ['pending', 'searching'] },
+      });
+    }
+
+    if (!request) {
       return res.status(404).json({
         success: false,
-        message: 'Pending companionship request not found or cannot be deleted',
+        message: 'Pending request not found or cannot be deleted',
       });
     }
 
     return res.status(200).json({
       success: true,
-      message: 'Companionship request deleted successfully',
+      message: 'Request deleted successfully',
       data: { id },
     });
   } catch (error) {
-    console.error('Error deleting companionship request:', error);
+    console.error('Error deleting request:', error);
     return res.status(500).json({
       success: false,
       message: 'Server error while deleting request',
@@ -337,10 +429,15 @@ const getOpenRequests = async (req, res) => {
       .populate('elderly', 'firstName lastName profilePicture phone address isEmailVerified verificationBadgeStatus age interests')
       .sort({ scheduledDate: 1, createdAt: -1 });
 
+    // Auto-transition and expire outdated requests that were never accepted
+    await syncAndAutoTransitionVisits(openRequests);
+
+    const activeOpen = openRequests.filter((r) => r.status === 'pending');
+
     return res.status(200).json({
       success: true,
-      count: openRequests.length,
-      data: openRequests,
+      count: activeOpen.length,
+      data: activeOpen,
     });
   } catch (error) {
     console.error('Error fetching open requests:', error);
@@ -353,7 +450,7 @@ const getOpenRequests = async (req, res) => {
 };
 
 /**
- * @desc    Update status of companionship visit (accepted -> ongoing -> completed / cancelled)
+ * @desc    Update status of companionship / help visit (accepted -> ongoing -> completed / cancelled)
  * @route   PUT /api/companionship/:id/status
  * @access  Private
  */
@@ -369,19 +466,56 @@ const updateStatus = async (req, res) => {
       });
     }
 
-    const request = await CompanionshipRequest.findOne({
+    let request = await CompanionshipRequest.findOne({
       _id: id,
       $or: [{ elderly: req.user._id }, { volunteer: req.user._id }],
     });
 
+    let isHelpModel = false;
+    if (!request) {
+      request = await HelpRequest.findOne({
+        _id: id,
+        $or: [{ elderlyId: req.user._id }, { caregiverId: req.user._id }, { volunteerId: req.user._id }],
+      });
+      if (request) {
+        isHelpModel = true;
+      }
+    }
+
     if (!request) {
       return res.status(404).json({
         success: false,
-        message: 'Companionship request not found or not authorized',
+        message: 'Request not found or not authorized',
       });
     }
 
+    // Time window restriction for manual start (Allow starting up to 5 min early)
+    if ((status === 'ongoing' || status === 'arrived') && process.env.NODE_ENV !== 'test') {
+      const { startDateTime, earlyStartDateTime, dateStr, startStr } = getVisitTimeWindow(request);
+      const now = new Date();
+
+      if (now < earlyStartDateTime) {
+        return res.status(400).json({
+          success: false,
+          message: `This visit is scheduled for ${dateStr} at ${startStr}. You can manually start this visit up to 5 minutes before the scheduled time.`,
+          scheduledStart: startDateTime,
+          earlyStart: earlyStartDateTime,
+        });
+      }
+    }
+
     request.status = status;
+    if (isHelpModel) {
+      if (status === 'ongoing') {
+        request.trackingConsent = true;
+        request.tripStartedAt = Date.now();
+      } else if (status === 'arrived') {
+        request.arrivedAt = Date.now();
+      } else if (status === 'completed') {
+        request.completedAt = Date.now();
+      }
+    }
+
     await request.save();
 
     // Send notification to counterpart user
@@ -442,7 +576,7 @@ const updateStatus = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: `Companionship visit status updated to ${status}`,
+      message: `Visit status updated to ${status}`,
       data: request,
     });
   } catch (error) {

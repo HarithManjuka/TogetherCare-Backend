@@ -33,7 +33,7 @@ const HelpRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['searching', 'matched', 'confirmed', 'ongoing', 'arrived', 'completed', 'cancelled'],
+      enum: ['searching', 'matched', 'confirmed', 'ongoing', 'arrived', 'completed', 'cancelled', 'expired', 'outdated'],
       default: 'searching',
     },
     volunteerId: {

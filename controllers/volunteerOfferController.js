@@ -1,5 +1,6 @@
 // controllers/volunteerOfferController.js
 const VolunteerOffer = require('../models/VolunteerOffer');
+const { getVisitTimeWindow, syncAndAutoTransitionVisits } = require('../utils/scheduleHelper');
 
 // @desc    Create / Post an Offer
 // @route   POST /api/volunteer-offers
@@ -680,53 +681,65 @@ exports.getMySchedule = async (req, res) => {
 
     const compVisits = await CompanionshipRequest.find({
       volunteer: req.user._id,
-      status: { $in: ['accepted', 'ongoing'] },
+      status: { $in: ['accepted', 'scheduled', 'ongoing', 'arrived'] },
     })
       .populate('elderly', 'firstName lastName phone address')
       .sort({ scheduledDate: 1 });
 
+    // Auto-transition visits according to time frames (upcoming -> ongoing -> completed)
+    await syncAndAutoTransitionVisits([...helpVisits, ...compVisits]);
+
     const schedule = [];
 
-    helpVisits.forEach((item) => {
-      const elder = item.elderlyId || {};
-      const caregiver = item.caregiverId || {};
-      schedule.push({
-        id: item._id.toString(),
-        _id: item._id.toString(),
-        requestId: item._id.toString(),
-        serviceType: item.serviceType || 'Elderly Assistance',
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
-        elderPhone: elder.phone || '',
-        caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
-        caregiverPhone: caregiver.phone || '',
-        date: item.date || 'Today',
-        time: item.time || '10:00 AM',
-        location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
-        status: item.status, // 'matched' | 'confirmed' | 'ongoing' | 'arrived'
-        isDirectRequest: item.status === 'matched',
-        trackingConsent: item.trackingConsent || false,
-        arrivedAt: item.arrivedAt,
-        notes: `Task for ${item.serviceType}.`,
-        source: 'help_request',
+    helpVisits
+      .filter((v) => v.status !== 'completed' && v.status !== 'cancelled')
+      .forEach((item) => {
+        const elder = item.elderlyId || {};
+        const caregiver = item.caregiverId || {};
+        schedule.push({
+          id: item._id.toString(),
+          _id: item._id.toString(),
+          requestId: item._id.toString(),
+          serviceType: item.serviceType || 'Elderly Assistance',
+          elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+          elderPhone: elder.phone || '',
+          caregiverName: `${caregiver.firstName || 'Family Member'} ${caregiver.lastName || ''}`.trim(),
+          caregiverPhone: caregiver.phone || '',
+          date: item.date || 'Today',
+          time: item.time || '10:00 AM',
+          location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+          status: item.status, // 'matched' | 'confirmed' | 'ongoing' | 'arrived'
+          isDirectRequest: item.status === 'matched',
+          trackingConsent: item.trackingConsent || false,
+          arrivedAt: item.arrivedAt,
+          notes: `Task for ${item.serviceType}.`,
+          source: 'help_request',
+        });
       });
-    });
 
-    compVisits.forEach((item) => {
-      const elder = item.elderly || {};
-      schedule.push({
-        id: item._id.toString(),
-        _id: item._id.toString(),
-        serviceType: item.activityType || 'Companionship Visit',
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
-        elderPhone: elder.phone || '',
-        date: item.scheduledDate ? new Date(item.scheduledDate).toISOString().split('T')[0] : 'Today',
-        time: item.timeSlot || item.startTime || '02:00 PM',
-        location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
-        status: 'confirmed',
-        notes: item.notes || 'Companionship visit',
-        source: 'companionship',
+    compVisits
+      .filter((v) => v.status !== 'completed' && v.status !== 'cancelled')
+      .forEach((item) => {
+        const elder = item.elderly || {};
+        const isOngoing = item.status === 'ongoing';
+        const isArrived = item.status === 'arrived';
+        schedule.push({
+          id: item._id.toString(),
+          _id: item._id.toString(),
+          serviceType: item.activityType || 'Companionship Visit',
+          elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+          elderPhone: elder.phone || '',
+          date: item.scheduledDate ? new Date(item.scheduledDate).toISOString().split('T')[0] : 'Today',
+          time: item.timeSlot || item.startTime || '02:00 PM',
+          startTime: item.startTime,
+          endTime: item.endTime,
+          scheduledDate: item.scheduledDate,
+          location: item.location || (elder.address ? `${elder.address.streetAddress}, ${elder.address.city}` : 'Colombo'),
+          status: isOngoing ? 'ongoing' : isArrived ? 'arrived' : 'confirmed',
+          notes: item.notes || 'Companionship visit',
+          source: 'companionship',
+        });
       });
-    });
 
     res.status(200).json({
       success: true,
@@ -766,6 +779,22 @@ exports.updateTaskStatus = async (req, res) => {
         if (compReq.volunteer && compReq.volunteer.toString() !== req.user._id.toString()) {
           return res.status(403).json({ success: false, message: 'Not authorized for this task' });
         }
+
+        // Time window restriction for manual start (Allow starting up to 5 min early)
+        if ((status === 'ongoing' || status === 'arrived') && process.env.NODE_ENV !== 'test') {
+          const { startDateTime, earlyStartDateTime, dateStr, startStr } = getVisitTimeWindow(compReq);
+          const now = new Date();
+
+          if (now < earlyStartDateTime) {
+            return res.status(400).json({
+              success: false,
+              message: `This visit is scheduled for ${dateStr} at ${startStr}. You can manually start this visit up to 5 minutes before the scheduled time.`,
+              scheduledStart: startDateTime,
+              earlyStart: earlyStartDateTime,
+            });
+          }
+        }
+
         compReq.status = status === 'arrived' ? 'ongoing' : status;
         if (status === 'cancelled') {
           compReq.volunteer = null;
@@ -826,6 +855,21 @@ exports.updateTaskStatus = async (req, res) => {
         success: false,
         message: 'Not authorized to update this task',
       });
+    }
+
+    // Time window restriction for manual start (Allow starting up to 5 min early)
+    if ((status === 'ongoing' || status === 'arrived') && process.env.NODE_ENV !== 'test') {
+      const { startDateTime, earlyStartDateTime, dateStr, startStr } = getVisitTimeWindow(request);
+      const now = new Date();
+
+      if (now < earlyStartDateTime) {
+        return res.status(400).json({
+          success: false,
+          message: `This visit is scheduled for ${dateStr} at ${startStr}. You can manually start this visit up to 5 minutes before the scheduled time.`,
+          scheduledStart: startDateTime,
+          earlyStart: earlyStartDateTime,
+        });
+      }
     }
 
     request.status = status;

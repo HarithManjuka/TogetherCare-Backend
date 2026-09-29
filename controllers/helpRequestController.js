@@ -4,6 +4,7 @@ const VolunteerOffer = require('../models/VolunteerOffer');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
 const { createNotification } = require('./notificationController');
+const { getVisitTimeWindow } = require('../utils/scheduleHelper');
 
 // Helper to calculate rating for a volunteer
 const getVolunteerDetails = async (volunteerId) => {
@@ -535,6 +536,17 @@ exports.startTrip = async (req, res) => {
         if (!compReq.volunteer || compReq.volunteer.toString() !== req.user._id.toString()) {
           return res.status(403).json({ success: false, message: 'Not authorized for this request' });
         }
+
+        const { startDateTime, dateStr, startStr } = getVisitTimeWindow(compReq);
+        const now = new Date();
+        if (now < startDateTime) {
+          return res.status(400).json({
+            success: false,
+            message: `This visit is scheduled for ${dateStr} at ${startStr}. You can only start the trip once the scheduled time frame begins.`,
+            scheduledStart: startDateTime,
+          });
+        }
+
         compReq.status = 'ongoing';
         await compReq.save();
         return res.status(200).json({
@@ -552,6 +564,16 @@ exports.startTrip = async (req, res) => {
 
     if (request.status !== 'confirmed' && request.status !== 'ongoing') {
       return res.status(400).json({ success: false, message: 'Request must be confirmed before starting trip' });
+    }
+
+    const { startDateTime, dateStr, startStr } = getVisitTimeWindow(request);
+    const now = new Date();
+    if (now < startDateTime) {
+      return res.status(400).json({
+        success: false,
+        message: `This visit is scheduled for ${dateStr} at ${startStr}. You can only start the trip once the scheduled time frame begins.`,
+        scheduledStart: startDateTime,
+      });
     }
 
     request.status = 'ongoing';
