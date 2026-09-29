@@ -190,8 +190,87 @@ const syncAndAutoTransitionVisits = async (visits) => {
   return visits;
 };
 
+/**
+ * Checks if a candidate schedule window overlaps with any existing active schedule for an elder.
+ * @param {string|ObjectId} elderlyId
+ * @param {Object} candidate - { scheduledDate / date, startTime, endTime, timeSlot }
+ * @param {string|ObjectId} [excludeId] - Optional schedule ID to exclude (for updates)
+ * @returns {Promise<{ hasConflict: boolean, conflictingSchedule?: Object, message?: string }>}
+ */
+const checkElderScheduleOverlap = async (elderlyId, candidate, excludeId = null) => {
+  if (!elderlyId || !candidate) return { hasConflict: false };
+
+  const candidateWindow = getVisitTimeWindow(candidate);
+  const CompanionshipRequest = require('../models/CompanionshipRequest');
+  const HelpRequest = require('../models/HelpRequest');
+
+  const excludeIdStr = excludeId ? excludeId.toString() : null;
+
+  // Active statuses that occupy the elder's time
+  const activeCompStatuses = ['pending', 'accepted', 'scheduled', 'upcoming', 'ongoing', 'in_progress', 'arrived'];
+  const activeHelpStatuses = ['pending', 'searching', 'confirmed', 'accepted', 'scheduled', 'ongoing', 'in_progress', 'arrived'];
+
+  const [compVisits, helpVisits] = await Promise.all([
+    CompanionshipRequest.find({
+      elderly: elderlyId,
+      status: { $in: activeCompStatuses },
+    }),
+    HelpRequest.find({
+      elderlyId: elderlyId,
+      status: { $in: activeHelpStatuses },
+    }),
+  ]);
+
+  const now = new Date();
+  const allVisits = [...compVisits, ...helpVisits];
+
+  for (const existing of allVisits) {
+    if (excludeIdStr && existing._id && existing._id.toString() === excludeIdStr) {
+      continue;
+    }
+
+    const existingStatus = (existing.status || '').toLowerCase();
+    if (['cancelled', 'completed', 'expired', 'outdated', 'rejected'].includes(existingStatus)) {
+      continue;
+    }
+
+    const existingWindow = getVisitTimeWindow(existing);
+
+    // If existing is unaccepted pending and its end time has already passed, skip
+    if (['pending', 'searching'].includes(existingStatus) && now >= existingWindow.endDateTime) {
+      continue;
+    }
+
+    // Compare date strings
+    if (candidateWindow.dateStr === existingWindow.dateStr) {
+      const startA = candidateWindow.startDateTime.getTime();
+      const endA = candidateWindow.endDateTime.getTime();
+      const startB = existingWindow.startDateTime.getTime();
+      const endB = existingWindow.endDateTime.getTime();
+
+      // Check time overlap: (startA < endB && startB < endA)
+      if (startA < endB && startB < endA) {
+        const activityTitle = existing.activityType || existing.serviceType || 'Visit';
+        const existingTime = existing.timeSlot || `${existingWindow.startStr} - ${existingWindow.endStr}`;
+        const existingStatusLabel = ['pending', 'searching'].includes(existingStatus)
+          ? 'pending request'
+          : 'scheduled visit';
+
+        return {
+          hasConflict: true,
+          conflictingSchedule: existing,
+          message: `Schedule conflict: You already have a ${existingStatusLabel} for "${activityTitle}" on ${candidateWindow.dateStr} at ${existingTime} that overlaps with this time.`,
+        };
+      }
+    }
+  }
+
+  return { hasConflict: false };
+};
+
 module.exports = {
   parseTimeToHoursMinutes,
   getVisitTimeWindow,
   syncAndAutoTransitionVisits,
+  checkElderScheduleOverlap,
 };

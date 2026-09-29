@@ -4,7 +4,7 @@ const VolunteerOffer = require('../models/VolunteerOffer');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
 const { createNotification } = require('./notificationController');
-const { getVisitTimeWindow } = require('../utils/scheduleHelper');
+const { getVisitTimeWindow, checkElderScheduleOverlap } = require('../utils/scheduleHelper');
 
 // Helper to calculate rating for a volunteer
 const getVolunteerDetails = async (volunteerId) => {
@@ -172,6 +172,20 @@ exports.createHelpRequest = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized dependent selection',
+      });
+    }
+
+    // Check for schedule overlap for the elder
+    const overlapCheck = await checkElderScheduleOverlap(elderlyId, {
+      date,
+      time,
+    });
+
+    if (overlapCheck.hasConflict) {
+      return res.status(400).json({
+        success: false,
+        message: overlapCheck.message,
+        conflict: true,
       });
     }
 
