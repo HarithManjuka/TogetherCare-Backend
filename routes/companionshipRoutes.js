@@ -10,6 +10,7 @@ const {
   updateRequest,
   deleteRequest,
   updateStatus,
+  rateVisit,
 } = require('../controllers/companionshipController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -20,6 +21,8 @@ router.get('/upcoming', getUpcomingVisits);
 router.get('/my-requests', getMyRequests);
 router.get('/open-requests', getOpenRequests);
 router.post('/create', createRequest);
+router.post('/:id/rate', rateVisit);
+router.put('/:id/rate', rateVisit);
 router.put('/:id/status', updateStatus);
 router.put('/:id/cancel', cancelRequest);
 router.put('/:id', updateRequest);

@@ -635,6 +635,211 @@ const updateStatus = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Submit rating and review for a completed companionship visit and/or volunteer
+ * @route   POST /api/companionship/:id/rate
+ * @access  Private (Elderly)
+ */
+const rateVisit = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      visitRating,
+      visitReview,
+      volunteerRating,
+      volunteerReview,
+      rating,
+      feedback,
+    } = req.body;
+
+    const Review = require('../models/Review');
+    const User = require('../models/User');
+
+    // 1. Find request by ID (CompanionshipRequest or HelpRequest)
+    let request = await CompanionshipRequest.findOne({
+      _id: id,
+      elderly: req.user._id,
+    }).populate('volunteer', 'firstName lastName email phone profilePicture rating ratingCount');
+
+    let isHelpModel = false;
+    if (!request) {
+      request = await HelpRequest.findOne({
+        _id: id,
+        elderlyId: req.user._id,
+      }).populate('volunteerId', 'firstName lastName email phone profilePicture rating ratingCount');
+      if (request) isHelpModel = true;
+    }
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Completed visit not found for rating',
+      });
+    }
+
+    // 2. Normalize ratings
+    const parsedVisitRating = visitRating !== undefined && visitRating !== null && visitRating > 0
+      ? Math.min(5, Math.max(1, parseInt(visitRating, 10)))
+      : (rating && rating > 0 ? Math.min(5, Math.max(1, parseInt(rating, 10))) : null);
+
+    const parsedVolunteerRating = volunteerRating !== undefined && volunteerRating !== null && volunteerRating > 0
+      ? Math.min(5, Math.max(1, parseInt(volunteerRating, 10)))
+      : null;
+
+    const cleanVisitReview = (visitReview || feedback || '').trim();
+    const cleanVolunteerReview = (volunteerReview || '').trim();
+
+    // Check that at least one rating or review was provided
+    if (!parsedVisitRating && !cleanVisitReview && !parsedVolunteerRating && !cleanVolunteerReview) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide at least a visit rating/review or volunteer rating/review to submit.',
+      });
+    }
+
+    // 3. Update Request ratings
+    if (parsedVisitRating) request.visitRating = parsedVisitRating;
+    if (cleanVisitReview) request.visitReview = cleanVisitReview;
+    if (parsedVolunteerRating) request.volunteerRating = parsedVolunteerRating;
+    if (cleanVolunteerReview) request.volunteerReview = cleanVolunteerReview;
+
+    // Backward compatibility
+    request.rating = parsedVisitRating || parsedVolunteerRating || request.rating || 5;
+    request.feedback = cleanVisitReview || cleanVolunteerReview || request.feedback || '';
+    request.ratedAt = new Date();
+
+    await request.save();
+
+    // 4. Update Volunteer Stats & Send Notification if Volunteer rated
+    const volunteerObj = isHelpModel ? request.volunteerId : request.volunteer;
+    const volunteerId = volunteerObj?._id || volunteerObj;
+
+    if (volunteerId) {
+      const effectiveVolRating = parsedVolunteerRating || parsedVisitRating;
+      const effectiveVolComment = cleanVolunteerReview || cleanVisitReview;
+      const scheduleModelName = (request.constructor.modelName === 'HelpRequest' || isHelpModel) ? 'HelpRequest' : 'CompanionshipRequest';
+
+      if (effectiveVolRating || effectiveVolComment) {
+        // Upsert Review entry: replaces previous rating for this visit so no duplicate ratings exist
+        try {
+          let existingReview = await Review.findOne({
+            reviewer: req.user._id,
+            recipient: volunteerId,
+            scheduleId: request._id,
+          });
+
+          if (!existingReview) {
+            existingReview = await Review.findOne({
+              reviewer: req.user._id,
+              recipient: volunteerId,
+              scheduleId: { $exists: false },
+              activityType: request.activityType || request.serviceType || 'Companionship',
+            });
+          }
+
+          if (existingReview) {
+            existingReview.rating = effectiveVolRating || 5;
+            existingReview.comment = effectiveVolComment || '';
+            existingReview.activityType = request.activityType || request.serviceType || 'Companionship';
+            existingReview.scheduleId = request._id;
+            existingReview.scheduleModel = scheduleModelName;
+            existingReview.visitRating = parsedVisitRating || null;
+            existingReview.visitReview = cleanVisitReview || '';
+            await existingReview.save();
+          } else {
+            await Review.create({
+              reviewer: req.user._id,
+              recipient: volunteerId,
+              rating: effectiveVolRating || 5,
+              comment: effectiveVolComment || '',
+              activityType: request.activityType || request.serviceType || 'Companionship',
+              scheduleId: request._id,
+              scheduleModel: scheduleModelName,
+              visitRating: parsedVisitRating || null,
+              visitReview: cleanVisitReview || '',
+            });
+          }
+        } catch (revErr) {
+          console.error('Error recording review document:', revErr);
+        }
+      } else {
+        // If rating was cleared/removed, remove previous review for this schedule
+        try {
+          await Review.deleteMany({
+            reviewer: req.user._id,
+            recipient: volunteerId,
+            scheduleId: request._id,
+          });
+        } catch (delErr) {
+          console.error('Error cleaning up removed review:', delErr.message);
+        }
+      }
+
+      // Recalculate volunteer rating metrics from database
+      try {
+        const allReviews = await Review.find({ recipient: volunteerId });
+        if (allReviews.length > 0) {
+          const sum = allReviews.reduce((acc, curr) => acc + (curr.rating || 0), 0);
+          const avgRating = Number((sum / allReviews.length).toFixed(1));
+          await User.findByIdAndUpdate(volunteerId, {
+            rating: avgRating,
+            ratingCount: allReviews.length,
+            totalReviews: allReviews.length,
+          });
+        } else {
+          await User.findByIdAndUpdate(volunteerId, {
+            rating: 0,
+            ratingCount: 0,
+            totalReviews: 0,
+          });
+        }
+      } catch (statsErr) {
+        console.error('Error updating volunteer rating stats:', statsErr.message);
+      }
+
+      // Send Notification to volunteer
+      if (effectiveVolRating || effectiveVolComment) {
+        try {
+          const elderName = `${req.user.firstName || 'Elder'} ${req.user.lastName || ''}`.trim();
+          const activityName = request.activityType || request.serviceType || 'Companionship';
+          const starLabel = effectiveVolRating ? `${effectiveVolRating} ⭐` : 'a review';
+
+          await createNotification({
+            recipient: volunteerId,
+            sender: req.user._id,
+            senior: req.user._id,
+            type: 'visit_reviewed',
+            title: 'New Rating & Review Received ⭐',
+            message: `${elderName} rated you ${starLabel} for your ${activityName} visit${effectiveVolComment ? `: "${effectiveVolComment}"` : '.'}`,
+            data: {
+              requestId: request._id,
+              scheduleId: request._id,
+              visitRating: parsedVisitRating,
+              volunteerRating: parsedVolunteerRating,
+              volunteerReview: cleanVolunteerReview,
+            },
+          });
+        } catch (notifErr) {
+          console.error('Error sending review notification to volunteer:', notifErr.message);
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Rating and review submitted successfully',
+      data: request,
+    });
+  } catch (error) {
+    console.error('Error submitting visit/volunteer rating:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while submitting rating',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getUpcomingVisits,
   getMyRequests,
@@ -644,6 +849,7 @@ module.exports = {
   updateRequest,
   deleteRequest,
   updateStatus,
+  rateVisit,
 };
 
 

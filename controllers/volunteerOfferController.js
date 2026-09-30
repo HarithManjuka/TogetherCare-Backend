@@ -1051,32 +1051,51 @@ exports.getMyHistory = async (req, res) => {
 // @access  Private (Volunteer)
 exports.getMyStats = async (req, res) => {
   try {
+    const Review = require('../models/Review');
+    const CompanionshipRequest = require('../models/CompanionshipRequest');
+    const User = require('../models/User');
+
     const completedVisits = await HelpRequest.find({
       volunteerId: req.user._id,
       status: 'completed',
     });
+
+    const completedCompVisits = await CompanionshipRequest.find({
+      volunteer: req.user._id,
+      status: 'completed',
+    });
+
+    const allCompleted = [...completedVisits, ...completedCompVisits];
 
     // Calculate visits this month
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
-    const thisMonthVisits = completedVisits.filter((v) => {
-      const d = v.completedAt ? new Date(v.completedAt) : new Date(v.updatedAt);
+    const thisMonthVisits = allCompleted.filter((v) => {
+      const d = v.completedAt ? new Date(v.completedAt) : (v.updatedAt ? new Date(v.updatedAt) : new Date());
       return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
     const hoursThisMonth = (thisMonthVisits.length * 1.5).toFixed(1);
 
     // Unique elders helped
-    const distinctElders = new Set(completedVisits.map((v) => v.elderlyId?.toString()).filter(Boolean));
+    const distinctElders = new Set(
+      allCompleted
+        .map((v) => (v.elderlyId?._id || v.elderlyId || v.elderly?._id || v.elderly)?.toString())
+        .filter(Boolean)
+    );
     const peopleHelped = distinctElders.size;
 
-    // Average rating
-    const ratedVisits = completedVisits.filter((v) => v.rating && v.rating > 0);
-    const avgRating = ratedVisits.length > 0
-      ? (ratedVisits.reduce((sum, v) => sum + v.rating, 0) / ratedVisits.length).toFixed(1)
-      : '5.0';
+    // Fetch actual database reviews
+    const dbReviews = await Review.find({ recipient: req.user._id });
+    let avgRating = 0;
+    if (dbReviews.length > 0) {
+      const sum = dbReviews.reduce((acc, curr) => acc + (curr.rating || 0), 0);
+      avgRating = Number((sum / dbReviews.length).toFixed(1));
+    } else if (req.user.rating && req.user.rating > 0) {
+      avgRating = Number(req.user.rating.toFixed(1));
+    }
 
     const activeOffersCount = await VolunteerOffer.countDocuments({
       volunteerId: req.user._id,
@@ -1093,9 +1112,10 @@ exports.getMyStats = async (req, res) => {
       data: {
         hoursThisMonth: parseFloat(hoursThisMonth) || 0,
         peopleHelped: peopleHelped || 0,
-        averageRating: parseFloat(avgRating) || 5.0,
-        totalCompletedVisits: completedVisits.length,
-        totalHours: (completedVisits.length * 1.5).toFixed(1),
+        averageRating: avgRating > 0 ? avgRating : 0,
+        totalReviews: dbReviews.length,
+        totalCompletedVisits: allCompleted.length,
+        totalHours: (allCompleted.length * 1.5).toFixed(1),
         activeOffersCount,
         upcomingTasksCount,
       },

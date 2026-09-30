@@ -33,6 +33,8 @@ const NotificationSchema = new mongoose.Schema(
         'visit_approved',
         'visit_started',
         'visit_completed',
+        'visit_reviewed',
+        'review_received',
         'schedule_conflict',
         'message',
         'activity_alert',
