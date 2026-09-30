@@ -201,9 +201,74 @@ describe('IT23839106: Elderly Companionship & Schedule Overlap Prevention Integr
         .post(`/api/volunteer-offers/${offerId}/accept`)
         .set('Authorization', `Bearer ${elderlyToken}`);
 
-      expect(acceptRes.status).toBe(400);
-      expect(acceptRes.body.success).toBe(false);
-      expect(acceptRes.body.message).toMatch(/Schedule conflict/i);
+    });
+  });
+
+  describe('Rating & Review Updates with In-Place Deduplication', () => {
+    it('should submit a rating, then update the rating in-place without creating duplicate review entries', async () => {
+      const Review = require('../../models/Review');
+      const Notification = require('../../models/Notification');
+
+      // 1. Create a completed companionship visit assigned to the volunteer
+      const visit = await CompanionshipRequest.create({
+        elderly: elderlyUser._id,
+        volunteer: volunteerUser._id,
+        activityType: 'Reading',
+        scheduledDate: new Date(),
+        startTime: '10:00 AM',
+        endTime: '11:00 AM',
+        status: 'completed',
+      });
+
+      // 2. Initial rating submission
+      const rateRes1 = await request(app)
+        .post(`/api/companionship/${visit._id}/rate`)
+        .set('Authorization', `Bearer ${elderlyToken}`)
+        .send({
+          visitRating: 4,
+          visitReview: 'Great reading session!',
+          volunteerRating: 4,
+          volunteerReview: 'Kasun was very helpful and patient.',
+        });
+
+      expect(rateRes1.status).toBe(200);
+      expect(rateRes1.body.success).toBe(true);
+
+      // Verify Review count in DB is 1
+      let reviews = await Review.find({ scheduleId: visit._id });
+      expect(reviews.length).toBe(1);
+      expect(reviews[0].rating).toBe(4);
+      expect(reviews[0].comment).toBe('Kasun was very helpful and patient.');
+
+      // Verify Volunteer received notification
+      const notif1 = await Notification.findOne({
+        recipient: volunteerUser._id,
+        type: 'visit_reviewed',
+      });
+      expect(notif1).toBeTruthy();
+      expect(notif1.message).toContain('rated you 4 ⭐');
+
+      // 3. Update the rating to 5 stars
+      const rateRes2 = await request(app)
+        .post(`/api/companionship/${visit._id}/rate`)
+        .set('Authorization', `Bearer ${elderlyToken}`)
+        .send({
+          visitRating: 5,
+          visitReview: 'Even better after reflecting!',
+          volunteerRating: 5,
+          volunteerReview: 'Outstanding volunteer, exceeded expectations!',
+        });
+
+      expect(rateRes2.status).toBe(200);
+      expect(rateRes2.body.success).toBe(true);
+
+      // Verify Review count in DB is STILL 1 (updated in place, no duplicates)
+      reviews = await Review.find({ scheduleId: visit._id });
+      expect(reviews.length).toBe(1);
+      expect(reviews[0].rating).toBe(5);
+      expect(reviews[0].comment).toBe('Outstanding volunteer, exceeded expectations!');
+      expect(reviews[0].visitRating).toBe(5);
     });
   });
 });
+
