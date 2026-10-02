@@ -19,6 +19,7 @@ const {
   addCaregiverCertification,
   deleteCaregiverCertification,
   submitVolunteerVerification,
+  downloadVolunteerEvidence,
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
@@ -37,12 +38,17 @@ router.put('/profile', protect, updateUserProfile);
 router.post('/certifications', protect, addCaregiverCertification);
 router.delete('/certifications/:id', protect, deleteCaregiverCertification);
 
-// Volunteer verification route
+// Volunteer verification routes
 router.post(
   '/volunteer-verification',
   protect,
   handleEvidenceUpload,
   submitVolunteerVerification
+);
+router.get(
+  '/volunteer-verification/:userId/download/:fileIndex',
+  protect,
+  downloadVolunteerEvidence
 );
 
 // Email Verification Flow
