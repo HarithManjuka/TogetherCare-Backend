@@ -9,6 +9,7 @@ const {
   uploadUserProfilePicture,
   deleteUserProfilePicture,
 } = require('../services/cloudinaryService');
+const cloudinary = require('../config/cloudinary');
 
 const generateToken = (id, role, customId) => {
   return jwt.sign({ id, role, customId }, process.env.JWT_SECRET, {
@@ -1080,7 +1081,9 @@ const submitVolunteerVerification = async (req, res) => {
 
     // Map uploaded files from Cloudinary
     const uploadedEvidence = req.files.map((file, index) => {
-      const isPdf = file.mimetype === 'application/pdf';
+      const isPdf =
+        file.mimetype === 'application/pdf' ||
+        (file.originalname && file.originalname.toLowerCase().endsWith('.pdf'));
       return {
         url: file.path || file.secure_url,
         publicId: file.filename,
@@ -1126,6 +1129,95 @@ const submitVolunteerVerification = async (req, res) => {
   }
 };
 
+// @desc    Securely download volunteer verification evidence (PDF or images)
+// @route   GET /api/auth/volunteer-verification/:userId/download/:fileIndex
+// @access  Private (Admin or Owner Volunteer)
+const downloadVolunteerEvidence = async (req, res) => {
+  try {
+    const { userId, fileIndex } = req.params;
+    const isOwner = req.user._id.toString() === userId;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ status: 'fail', message: 'Not authorized to download this document.' });
+    }
+
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
+      return res.status(404).json({ status: 'fail', message: 'User not found.' });
+    }
+
+    const evidenceList = targetUser.volunteerVerification?.evidenceFiles || [];
+    const index = parseInt(fileIndex, 10);
+    const file = evidenceList[index];
+
+    if (!file) {
+      return res.status(404).json({ status: 'fail', message: 'Evidence file not found.' });
+    }
+
+    const isPdf =
+      file.fileType === 'pdf' ||
+      (file.originalName && file.originalName.toLowerCase().endsWith('.pdf'));
+    const ext = isPdf ? 'pdf' : 'jpg';
+    const targetFileName =
+      file.originalName || `${file.documentCategory || 'evidence'}_${targetUser.customId || 'doc'}.${ext}`;
+
+    // Generate signed download URL from Cloudinary if publicId exists
+    let downloadUrl = file.url;
+    if (file.publicId) {
+      try {
+        downloadUrl = cloudinary.utils.private_download_url(file.publicId, '', {
+          resource_type: isPdf ? 'raw' : 'image',
+          type: 'upload',
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        });
+      } catch (err) {
+        console.warn('Error generating Cloudinary signed download URL:', err.message);
+        downloadUrl = file.url;
+      }
+    }
+
+    const https = require('https');
+    const http = require('http');
+    const clientHttp = downloadUrl.startsWith('https') ? https : http;
+
+    clientHttp
+      .get(downloadUrl, (remoteRes) => {
+        if (remoteRes.statusCode >= 400) {
+          return res.status(remoteRes.statusCode).json({
+            status: 'fail',
+            message: 'Failed to retrieve evidence file from storage provider.',
+          });
+        }
+
+        res.setHeader(
+          'Content-Type',
+          isPdf ? 'application/pdf' : remoteRes.headers['content-type'] || 'image/jpeg'
+        );
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${encodeURIComponent(targetFileName)}"`
+        );
+        if (remoteRes.headers['content-length']) {
+          res.setHeader('Content-Length', remoteRes.headers['content-length']);
+        }
+
+        remoteRes.pipe(res);
+      })
+      .on('error', (err) => {
+        console.error('Download stream error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ status: 'error', message: 'Could not stream document.' });
+        }
+      });
+  } catch (error) {
+    console.error('Error in downloadVolunteerEvidence:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ status: 'error', message: error.message || 'Server error' });
+    }
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -1144,4 +1236,5 @@ module.exports = {
   addCaregiverCertification,
   deleteCaregiverCertification,
   submitVolunteerVerification,
+  downloadVolunteerEvidence,
 };
