@@ -13,6 +13,7 @@ const {
   getMySchedule,
   updateTaskStatus,
   getMyHistory,
+  addHistoryLog,
   getMyStats,
   getDirectRequests,
 } = require('../controllers/volunteerOfferController');
@@ -31,7 +32,9 @@ router.get('/available-requests', protect, getAvailableRequests);
 router.post('/requests/:id/accept', protect, acceptRequest);
 router.get('/my-schedule', protect, getMySchedule);
 router.put('/tasks/:id/status', protect, updateTaskStatus);
-router.get('/my-history', protect, getMyHistory);
+router.route('/my-history')
+  .get(protect, getMyHistory)
+  .post(protect, addHistoryLog);
 router.get('/my-stats', protect, getMyStats);
 
 // Offer operations by ID

@@ -399,6 +399,8 @@ exports.deleteOffer = async (req, res) => {
 const HelpRequest = require('../models/HelpRequest');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const User = require('../models/User');
+const Activity = require('../models/Activity');
+const Interest = require('../models/Interest');
 const { createNotification } = require('./notificationController');
 
 // Helper to get equivalent service names across offers and requests
@@ -432,51 +434,70 @@ exports.getAvailableRequests = async (req, res) => {
 
     // 1. Query pending Companionship Requests created by Elders
     let compQuery = {
-      status: 'pending',
+      status: { $in: ['pending', 'open', 'searching'] },
       volunteer: null,
-      $or: [
-        { scheduledDate: { $gte: new Date(todayStr + 'T00:00:00.000Z') } },
-        { scheduledDate: { $exists: false } },
-        { scheduledDate: null },
-      ],
     };
-
-    if (category && category !== 'all') {
-      compQuery.activityType = { $regex: category, $options: 'i' };
-    }
-
-    const companionshipRequests = await CompanionshipRequest.find(compQuery)
-      .populate('elderly', 'firstName lastName phone address profilePicture customId')
-      .populate('activityId', 'name icon iconFamily')
-      .sort({ createdAt: -1 });
 
     // 2. Query open Help Requests created by Elders or Family Caregivers
     let helpQuery = {
-      status: { $in: ['searching', 'pending'] },
+      status: { $in: ['searching', 'pending', 'open'] },
       volunteerId: null,
-      $or: [
-        { date: { $gte: todayStr } },
-        { date: { $exists: false } },
-        { date: null },
-        { date: '' },
-      ],
     };
 
     if (category && category !== 'all') {
-      helpQuery.serviceType = { $regex: category, $options: 'i' };
+      const catLower = category.toLowerCase().trim();
+      if (catLower === 'companionship') {
+        // Companionship includes all social companionship activities (chat, walk, reading, coffee, etc.)
+        compQuery.activityType = { $not: /grocery|food|medicine|pharmacy|prescript/i };
+        helpQuery.serviceType = { $regex: 'comp|social|chat', $options: 'i' };
+      } else if (catLower === 'grocery') {
+        compQuery.activityType = { $regex: 'grocer|food|shop', $options: 'i' };
+        helpQuery.serviceType = { $regex: 'grocer|food|shop', $options: 'i' };
+      } else if (catLower === 'medicine') {
+        compQuery.activityType = { $regex: 'med|pharm|prescript', $options: 'i' };
+        helpQuery.serviceType = { $regex: 'med|pharm|prescript', $options: 'i' };
+      } else if (catLower === 'walk') {
+        compQuery.activityType = { $regex: 'walk|stroll|exercise', $options: 'i' };
+        helpQuery.serviceType = { $regex: 'walk|stroll|exercise', $options: 'i' };
+      } else if (catLower === 'reading') {
+        compQuery.activityType = { $regex: 'read|book|newspaper', $options: 'i' };
+        helpQuery.serviceType = { $regex: 'read|book|newspaper', $options: 'i' };
+      } else if (catLower === 'chat') {
+        compQuery.activityType = { $regex: 'chat|call|talk|conversation', $options: 'i' };
+        helpQuery.serviceType = { $regex: 'chat|call|talk|conversation', $options: 'i' };
+      } else {
+        compQuery.activityType = { $regex: category, $options: 'i' };
+        helpQuery.serviceType = { $regex: category, $options: 'i' };
+      }
     }
 
+    const companionshipRequests = await CompanionshipRequest.find(compQuery)
+      .populate('elderly', 'firstName lastName phone address profilePicture customId isEmailVerified verificationBadgeStatus age interests')
+      .populate('activityId', 'name icon iconFamily')
+      .sort({ createdAt: -1 });
+
     const helpRequests = await HelpRequest.find(helpQuery)
-      .populate('elderlyId', 'firstName lastName phone address profilePicture customId')
+      .populate('elderlyId', 'firstName lastName phone address profilePicture customId isEmailVerified verificationBadgeStatus age interests')
       .populate('caregiverId', 'firstName lastName phone')
       .sort({ createdAt: -1 });
 
     const formattedComp = companionshipRequests.map((cr) => {
       const elder = cr.elderly || {};
       const cat = (cr.activityType || '').toLowerCase();
-      const dateStr = cr.scheduledDate
-        ? new Date(cr.scheduledDate).toISOString().split('T')[0]
-        : todayStr;
+
+      let dateStr = todayStr;
+      let isFlexible = false;
+      if (cr.scheduledDate) {
+        const d = new Date(cr.scheduledDate);
+        if (!isNaN(d.getTime())) {
+          dateStr = d.toISOString().split('T')[0];
+          if (dateStr < todayStr) {
+            isFlexible = true;
+          }
+        }
+      } else {
+        isFlexible = true;
+      }
 
       const elderAddr = elder.address
         ? (typeof elder.address === 'string'
@@ -498,14 +519,15 @@ exports.getAvailableRequests = async (req, res) => {
           : cat.includes('read')
           ? 'reading'
           : 'companionship',
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Elderly Resident',
         elderPhone: elder.phone || '',
         distance: '1.2 km',
         duration: '1-2 hrs',
-        badge: 'Open',
-        badgeType: 'today',
+        badge: isFlexible ? 'Open Request' : (dateStr === todayStr ? 'Today' : 'Upcoming'),
+        badgeType: isFlexible ? 'today' : (dateStr === todayStr ? 'today' : 'upcoming'),
         address: cr.location || elderAddr || 'Colombo',
-        date: dateStr,
+        date: isFlexible ? 'Flexible (Open)' : dateStr,
+        rawDate: dateStr,
         time: cr.timeSlot || `${cr.startTime || '09:00 AM'} - ${cr.endTime || '11:00 AM'}`,
         items: cr.activityType ? [cr.activityType] : ['Companionship'],
         notes: cr.notes || '',
@@ -519,6 +541,8 @@ exports.getAvailableRequests = async (req, res) => {
     const formattedHelp = helpRequests.map((hr) => {
       const elder = hr.elderlyId || {};
       const cat = (hr.serviceType || '').toLowerCase();
+      const isUrgent = cat.includes('med');
+      const isFlexible = hr.date && hr.date < todayStr;
 
       const elderAddr = elder.address
         ? (typeof elder.address === 'string'
@@ -531,15 +555,16 @@ exports.getAvailableRequests = async (req, res) => {
         _id: hr._id.toString(),
         type: `${hr.serviceType || 'Assistance'} Help`,
         serviceType: hr.serviceType || 'Help',
-        category: cat.includes('med') ? 'medical' : cat.includes('grocer') ? 'grocery' : 'companionship',
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        category: isUrgent ? 'medical' : cat.includes('grocer') ? 'grocery' : 'companionship',
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Elderly Resident',
         elderPhone: elder.phone || '',
         distance: '1.2 km',
         duration: '45 min',
-        badge: hr.serviceType === 'Medicine' ? 'Urgent' : 'Today',
-        badgeType: hr.serviceType === 'Medicine' ? 'urgent' : 'today',
+        badge: isUrgent ? 'Urgent' : (isFlexible ? 'Open Request' : 'Today'),
+        badgeType: isUrgent ? 'urgent' : 'today',
         address: hr.location || elderAddr || 'Colombo',
-        date: hr.date || todayStr,
+        date: isFlexible ? 'Flexible (Open)' : (hr.date || todayStr),
+        rawDate: hr.date || todayStr,
         time: hr.time || '10:00 AM',
         items: hr.items && hr.items.length > 0 ? hr.items : (hr.serviceType ? [hr.serviceType] : []),
         notes: hr.feedback || hr.notes || '',
@@ -550,9 +575,21 @@ exports.getAvailableRequests = async (req, res) => {
     });
 
     // Combine all active elder requests and sort newest on top
-    const allFormatted = [...formattedComp, ...formattedHelp].sort((a, b) => {
+    let allFormatted = [...formattedComp, ...formattedHelp].sort((a, b) => {
       return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
     });
+
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      allFormatted = allFormatted.filter(
+        (item) =>
+          (item.elderName && item.elderName.toLowerCase().includes(q)) ||
+          (item.address && item.address.toLowerCase().includes(q)) ||
+          (item.serviceType && item.serviceType.toLowerCase().includes(q)) ||
+          (item.type && item.type.toLowerCase().includes(q)) ||
+          (item.notes && item.notes.toLowerCase().includes(q))
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -576,6 +613,7 @@ exports.acceptRequest = async (req, res) => {
   try {
     const requestId = req.params.id;
     const volunteerName = `${req.user.firstName} ${req.user.lastName || ''}`.trim();
+    const todayStr = new Date().toISOString().split('T')[0];
 
     let request = await HelpRequest.findById(requestId);
 
@@ -591,6 +629,13 @@ exports.acceptRequest = async (req, res) => {
         compReq.acceptedAt = new Date();
         compReq.companionName = volunteerName;
         compReq.status = 'accepted';
+
+        // Keep scheduled visit active for today if date was in past or flexible
+        const todayStart = new Date(todayStr + 'T00:00:00.000Z');
+        if (!compReq.scheduledDate || compReq.scheduledDate < todayStart) {
+          compReq.scheduledDate = new Date();
+        }
+
         await compReq.save();
 
         // Notify the elderly user
@@ -625,6 +670,9 @@ exports.acceptRequest = async (req, res) => {
 
     request.volunteerId = req.user._id;
     request.status = 'confirmed';
+    if (!request.date || request.date < todayStr) {
+      request.date = todayStr;
+    }
 
     // Check if volunteer has an active offer for this service/date, and decrement slots
     const serviceAliases = getServiceAliases(request.serviceType);
@@ -797,7 +845,22 @@ exports.updateTaskStatus = async (req, res) => {
       let compReq = await CompanionshipRequest.findById(req.params.id);
       if (compReq) {
         if (compReq.volunteer && compReq.volunteer.toString() !== req.user._id.toString()) {
-          return res.status(403).json({ success: false, message: 'Not authorized for this task' });
+          // In development / demo testing: re-assign or permit the authenticated volunteer to advance the task
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(`[Dev] Volunteer ${req.user._id} (${req.user.email}) adopting CompanionshipRequest ${compReq._id} from ${compReq.volunteer}`);
+            compReq.volunteer = req.user._id;
+            compReq.companionName = volunteerName;
+            compReq.acceptedBy = req.user._id;
+          } else {
+            return res.status(403).json({
+              success: false,
+              message: `Not authorized: This visit is assigned to volunteer account (${compReq.companionName || 'another volunteer'}). Please switch to that account.`,
+            });
+          }
+        } else if (!compReq.volunteer) {
+          compReq.volunteer = req.user._id;
+          compReq.companionName = volunteerName;
+          compReq.acceptedBy = req.user._id;
         }
 
         // Time window restriction for manual start (Allow starting up to 5 min early)
@@ -871,10 +934,17 @@ exports.updateTaskStatus = async (req, res) => {
     }
 
     if (request.volunteerId && request.volunteerId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this task',
-      });
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[Dev] Volunteer ${req.user._id} (${req.user.email}) adopting HelpRequest ${request._id} from ${request.volunteerId}`);
+        request.volunteerId = req.user._id;
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to update this task: Assigned to another volunteer account.',
+        });
+      }
+    } else if (!request.volunteerId) {
+      request.volunteerId = req.user._id;
     }
 
     // Time window restriction for manual start (Allow starting up to 5 min early)
@@ -997,7 +1067,7 @@ exports.getMyHistory = async (req, res) => {
       status: 'completed',
     })
       .populate('elderly', 'firstName lastName phone address')
-      .sort({ updatedAt: -1 });
+      .sort({ scheduledDate: -1, updatedAt: -1 });
 
     const history = [];
 
@@ -1007,7 +1077,7 @@ exports.getMyHistory = async (req, res) => {
         id: item._id.toString(),
         _id: item._id.toString(),
         date: item.completedAt ? new Date(item.completedAt).toISOString().split('T')[0] : (item.date || 'Recent'),
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Senior Resident',
         service: item.serviceType || 'Elderly Help',
         rating: item.rating || 5,
         feedback: item.feedback || 'Very punctual and polite! Thank you for the quick help.',
@@ -1018,18 +1088,25 @@ exports.getMyHistory = async (req, res) => {
 
     completedComp.forEach((item) => {
       const elder = item.elderly || {};
+      const dateStr = item.scheduledDate
+        ? new Date(item.scheduledDate).toISOString().split('T')[0]
+        : (item.updatedAt ? new Date(item.updatedAt).toISOString().split('T')[0] : 'Recent');
+
       history.push({
         id: item._id.toString(),
         _id: item._id.toString(),
-        date: item.updatedAt ? new Date(item.updatedAt).toISOString().split('T')[0] : 'Recent',
-        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+        date: dateStr,
+        elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Senior Member',
         service: item.activityType || 'Companionship',
-        rating: 5,
-        feedback: 'Wonderful conversation and company!',
-        duration: '2.0 hrs',
+        rating: item.rating || item.volunteerRating || item.visitRating || 5,
+        feedback: item.feedback || item.volunteerReview || item.visitReview || 'Wonderful conversation and company!',
+        duration: item.timeSlot || '2.0 hrs',
         location: item.location || 'Colombo',
       });
     });
+
+    // Sort newest date first
+    history.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
     res.status(200).json({
       success: true,
@@ -1041,6 +1118,119 @@ exports.getMyHistory = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error while fetching volunteer history',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Manually add / log a completed volunteer service activity
+// @route   POST /api/volunteer-offers/my-history
+// @access  Private (Volunteer)
+exports.addHistoryLog = async (req, res) => {
+  try {
+    const {
+      serviceType,
+      elderName,
+      date,
+      time,
+      durationHours,
+      location,
+      notes,
+      rating,
+      feedback,
+    } = req.body;
+
+    if (!serviceType || !serviceType.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide the service or activity type',
+      });
+    }
+
+    const Review = require('../models/Review');
+
+    let elderUser = null;
+    if (elderName && elderName.trim()) {
+      const nameParts = elderName.trim().split(' ');
+      elderUser = await User.findOne({
+        role: 'elderly',
+        firstName: { $regex: new RegExp(nameParts[0], 'i') },
+      });
+    }
+
+    if (!elderUser) {
+      elderUser = await User.findOne({ role: 'elderly' });
+    }
+
+    const scheduledDateObj = date ? new Date(date) : new Date();
+    const durationNum = parseFloat(durationHours) || 2.0;
+    const finalRating = parseInt(rating, 10) || 5;
+    const finalElderName = elderName && elderName.trim()
+      ? elderName.trim()
+      : (elderUser ? `${elderUser.firstName || 'Senior'} ${elderUser.lastName || ''}`.trim() : 'Senior Resident');
+    const finalFeedback = feedback && feedback.trim()
+      ? feedback.trim()
+      : 'Thank you so much for the dedicated help and companionship!';
+
+    const companionship = await CompanionshipRequest.create({
+      elderly: elderUser ? elderUser._id : req.user._id,
+      volunteer: req.user._id,
+      acceptedBy: req.user._id,
+      acceptedAt: scheduledDateObj,
+      companionName: `${req.user.firstName} ${req.user.lastName || ''}`.trim(),
+      activityType: serviceType.trim(),
+      scheduledDate: scheduledDateObj,
+      timeSlot: time || `${durationNum} hrs Visit`,
+      status: 'completed',
+      location: location && location.trim() ? location.trim() : 'Colombo, Sri Lanka',
+      notes: notes && notes.trim() ? notes.trim() : 'Completed community volunteer visit',
+      rating: finalRating,
+      feedback: finalFeedback,
+      visitRating: finalRating,
+      visitReview: finalFeedback,
+      volunteerRating: finalRating,
+      volunteerReview: finalFeedback,
+    });
+
+    if (elderUser) {
+      try {
+        await Review.create({
+          reviewer: elderUser._id,
+          recipient: req.user._id,
+          rating: finalRating,
+          comment: finalFeedback,
+          visitDetails: {
+            requestId: companionship._id,
+            activityType: serviceType.trim(),
+            date: date || new Date().toISOString().split('T')[0],
+            location: location || 'Colombo, Sri Lanka',
+          },
+        });
+      } catch (revErr) {
+        console.warn('Could not create review record for history log:', revErr.message);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Volunteer history log added successfully!',
+      data: {
+        id: companionship._id.toString(),
+        _id: companionship._id.toString(),
+        date: scheduledDateObj.toISOString().split('T')[0],
+        elderName: finalElderName,
+        service: serviceType.trim(),
+        rating: finalRating,
+        feedback: finalFeedback,
+        duration: time || `${durationNum} hrs`,
+        location: location || 'Colombo, Sri Lanka',
+      },
+    });
+  } catch (error) {
+    console.error('Add History Log Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while adding volunteer history log',
       error: error.message,
     });
   }

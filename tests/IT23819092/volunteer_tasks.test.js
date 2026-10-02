@@ -316,5 +316,37 @@ describe('IT23819092: Volunteer Task & Bidding Integration Tests', () => {
       expect(statsRes.body.data.totalCompletedVisits).toBeGreaterThanOrEqual(1);
       expect(statsRes.body.data.hoursThisMonth).toBeGreaterThan(0);
     });
+
+    it('should manually log past completed volunteer service via POST /api/volunteer-offers/my-history', async () => {
+      const res = await request(app)
+        .post('/api/volunteer-offers/my-history')
+        .set('Authorization', `Bearer ${volunteerToken}`)
+        .send({
+          serviceType: 'Companionship',
+          elderName: 'Nimal Perera',
+          date: '2026-10-01',
+          durationHours: '2.5',
+          location: 'Colombo 03',
+          notes: 'Helped with afternoon walk and smartphone setup',
+          rating: 5,
+          feedback: 'Wonderful conversation and company!',
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('id');
+      expect(res.body.data.service).toBe('Companionship');
+      expect(res.body.data.rating).toBe(5);
+
+      const histRes = await request(app)
+        .get('/api/volunteer-offers/my-history')
+        .set('Authorization', `Bearer ${volunteerToken}`);
+
+      expect(histRes.statusCode).toBe(200);
+      const found = histRes.body.data.find(
+        (h) => (h.id || h._id) === (res.body.data.id || res.body.data._id)
+      );
+      expect(found).toBeDefined();
+    });
   });
 });
