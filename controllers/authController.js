@@ -934,7 +934,7 @@ const getAllUsers = async (req, res) => {
     await fixDuplicateUserIds();
 
     const users = await User.find()
-      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
+      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName createdAt')
       .lean();
 
     return res.status(200).json({
