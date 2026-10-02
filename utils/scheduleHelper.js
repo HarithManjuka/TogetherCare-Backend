@@ -146,9 +146,14 @@ const syncAndAutoTransitionVisits = async (visits) => {
 
     const { startDateTime, endDateTime } = getVisitTimeWindow(item);
 
-    // 0. Auto-expire outdated requests if they were never accepted and end time passed
+    // 0. Auto-expire outdated requests only if scheduled date has completely passed by > 24 hours
     if (['pending', 'searching'].includes(currentStatus)) {
-      if (now >= endDateTime) {
+      const startDay = new Date(startDateTime.getFullYear(), startDateTime.getMonth(), startDateTime.getDate());
+      const todayDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const isPastDay = startDay < todayDay;
+
+      // Only expire unaccepted requests if the date is strictly in the past (> 24 hours overdue)
+      if (isPastDay && (now.getTime() - endDateTime.getTime() > 24 * 60 * 60 * 1000)) {
         item.status = 'expired';
         if (typeof item.save === 'function') {
           updatePromises.push(item.save().catch((err) => {
@@ -159,18 +164,34 @@ const syncAndAutoTransitionVisits = async (visits) => {
       continue;
     }
 
-    // 1. If accepted visit has reached or passed end time -> automatically complete exactly at end time
+    // 1. If accepted visit has reached or passed end time:
+    // Only auto-complete if the scheduled visit was on a previous day and is not already completed
+    const startDay = new Date(startDateTime.getFullYear(), startDateTime.getMonth(), startDateTime.getDate());
+    const todayDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const isPastDay = startDay < todayDay;
+
     if (now >= endDateTime) {
-      if (currentStatus !== 'completed') {
+      if (isPastDay && currentStatus !== 'completed') {
         item.status = 'completed';
+        if (!item.completedAt) {
+          item.completedAt = endDateTime;
+        }
         if (typeof item.save === 'function') {
           updatePromises.push(item.save().catch((err) => {
-            console.error('Error auto-completing visit at end time:', err.message);
+            console.error('Error auto-completing past visit at end time:', err.message);
+          }));
+        }
+      } else if (!isPastDay && ['accepted', 'scheduled', 'confirmed'].includes(currentStatus)) {
+        // Keep ongoing for today's visits so the volunteer can still start trip, arrive, and complete
+        item.status = 'ongoing';
+        if (typeof item.save === 'function') {
+          updatePromises.push(item.save().catch((err) => {
+            console.error('Error transitioning today visit to ongoing:', err.message);
           }));
         }
       }
     }
-    // 2. If accepted visit has reached exact start time but before end time -> automatically start to ongoing
+    // 2. If accepted visit has reached exact start time but before end time -> transition to ongoing
     else if (now >= startDateTime && now < endDateTime) {
       if (['accepted', 'scheduled', 'confirmed'].includes(currentStatus)) {
         item.status = 'ongoing';

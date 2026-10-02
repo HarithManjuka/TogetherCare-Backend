@@ -429,8 +429,45 @@ const getServiceAliases = (serviceType) => {
 // @access  Private (Volunteer)
 exports.getAvailableRequests = async (req, res) => {
   try {
-    const { category, search } = req.query;
+    const { category, search, sameDistrictOnly } = req.query;
     const todayStr = new Date().toISOString().split('T')[0];
+
+    const SRI_LANKA_DISTRICTS = [
+      'Colombo', 'Gampaha', 'Kalutara', 'Kandy', 'Matale', 'Nuwara Eliya',
+      'Galle', 'Matara', 'Hambantota', 'Jaffna', 'Kilinochchi', 'Mannar',
+      'Vavuniya', 'Mullaitivu', 'Batticaloa', 'Ampara', 'Trincomalee',
+      'Kurunegala', 'Puttalam', 'Anuradhapura', 'Polonnaruwa', 'Badulla',
+      'Monaragala', 'Ratnapura', 'Kegalle'
+    ];
+
+    const detectDistrict = (text, explicitDistrict) => {
+      if (explicitDistrict && explicitDistrict.trim()) {
+        const found = SRI_LANKA_DISTRICTS.find(
+          (d) => d.toLowerCase() === explicitDistrict.trim().toLowerCase()
+        );
+        if (found) return found;
+      }
+      if (!text) return 'Colombo';
+      for (const d of SRI_LANKA_DISTRICTS) {
+        const regex = new RegExp(`\\b${d}\\b`, 'i');
+        if (regex.test(text)) return d;
+      }
+      const lower = text.toLowerCase();
+      if (/colombo|dehiwala|mount lavinia|moratuwa|nugegoda|kotte|maharagama|kesbewa|homagama|piliyandala|rajagiriya|battaramulla|borella|pettah/i.test(lower)) return 'Colombo';
+      if (/gampaha|negombo|kelaniya|wattala|ja-ela|ragama|kiribathgoda|kadawatha|minuwangoda/i.test(lower)) return 'Gampaha';
+      if (/kalutara|panadura|beruwala|wadduwa|aluthgama|matugama|horana|bandaragama/i.test(lower)) return 'Kalutara';
+      if (/kandy|peradeniya|katugastota|gampola|kundasale|gelioya/i.test(lower)) return 'Kandy';
+      if (/galle|hikkaduwa|karapitiya|unawatuna|ambalangoda/i.test(lower)) return 'Galle';
+      if (/matara|weligama|akuressa|dickwella/i.test(lower)) return 'Matara';
+      if (/jaffna|chavakachcheri|point pedro/i.test(lower)) return 'Jaffna';
+      if (/kurunegala|kuliyapitiya|narammala/i.test(lower)) return 'Kurunegala';
+      return 'Colombo';
+    };
+
+    const userAddrFull = typeof req.user?.address === 'string'
+      ? req.user.address
+      : [req.user?.address?.streetAddress, req.user?.address?.city, req.user?.address?.district].filter(Boolean).join(', ');
+    const volunteerDistrict = detectDistrict(userAddrFull, req.user?.address?.district);
 
     // 1. Query pending Companionship Requests created by Elders
     let compQuery = {
@@ -447,7 +484,6 @@ exports.getAvailableRequests = async (req, res) => {
     if (category && category !== 'all') {
       const catLower = category.toLowerCase().trim();
       if (catLower === 'companionship') {
-        // Companionship includes all social companionship activities (chat, walk, reading, coffee, etc.)
         compQuery.activityType = { $not: /grocery|food|medicine|pharmacy|prescript/i };
         helpQuery.serviceType = { $regex: 'comp|social|chat', $options: 'i' };
       } else if (catLower === 'grocery') {
@@ -505,6 +541,17 @@ exports.getAvailableRequests = async (req, res) => {
             : [elder.address.streetAddress, elder.address.city, elder.address.district].filter(Boolean).join(', '))
         : 'Colombo';
 
+      const taskDistrict = detectDistrict(
+        cr.location || elderAddr || '',
+        typeof elder.address === 'object' ? elder.address?.district : ''
+      );
+
+      const isSameDistrict = Boolean(
+        volunteerDistrict &&
+        taskDistrict &&
+        volunteerDistrict.toLowerCase() === taskDistrict.toLowerCase()
+      );
+
       return {
         id: cr._id.toString(),
         _id: cr._id.toString(),
@@ -521,11 +568,13 @@ exports.getAvailableRequests = async (req, res) => {
           : 'companionship',
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Elderly Resident',
         elderPhone: elder.phone || '',
-        distance: '1.2 km',
+        distance: isSameDistrict ? 'Nearby (< 5 km)' : '12 km',
         duration: '1-2 hrs',
-        badge: isFlexible ? 'Open Request' : (dateStr === todayStr ? 'Today' : 'Upcoming'),
-        badgeType: isFlexible ? 'today' : (dateStr === todayStr ? 'today' : 'upcoming'),
+        badge: isSameDistrict ? 'Same District' : (isFlexible ? 'Open Request' : (dateStr === todayStr ? 'Today' : 'Upcoming')),
+        badgeType: isSameDistrict ? 'same_district' : (isFlexible ? 'today' : (dateStr === todayStr ? 'today' : 'upcoming')),
         address: cr.location || elderAddr || 'Colombo',
+        district: taskDistrict,
+        isSameDistrict,
         date: isFlexible ? 'Flexible (Open)' : dateStr,
         rawDate: dateStr,
         time: cr.timeSlot || `${cr.startTime || '09:00 AM'} - ${cr.endTime || '11:00 AM'}`,
@@ -550,6 +599,17 @@ exports.getAvailableRequests = async (req, res) => {
             : [elder.address.streetAddress, elder.address.city, elder.address.district].filter(Boolean).join(', '))
         : 'Colombo';
 
+      const taskDistrict = detectDistrict(
+        hr.location || elderAddr || '',
+        typeof elder.address === 'object' ? elder.address?.district : ''
+      );
+
+      const isSameDistrict = Boolean(
+        volunteerDistrict &&
+        taskDistrict &&
+        volunteerDistrict.toLowerCase() === taskDistrict.toLowerCase()
+      );
+
       return {
         id: hr._id.toString(),
         _id: hr._id.toString(),
@@ -558,11 +618,13 @@ exports.getAvailableRequests = async (req, res) => {
         category: isUrgent ? 'medical' : cat.includes('grocer') ? 'grocery' : 'companionship',
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Elderly Resident',
         elderPhone: elder.phone || '',
-        distance: '1.2 km',
+        distance: isSameDistrict ? 'Nearby (< 5 km)' : '12 km',
         duration: '45 min',
-        badge: isUrgent ? 'Urgent' : (isFlexible ? 'Open Request' : 'Today'),
-        badgeType: isUrgent ? 'urgent' : 'today',
+        badge: isUrgent ? 'Urgent' : (isSameDistrict ? 'Same District' : (isFlexible ? 'Open Request' : 'Today')),
+        badgeType: isUrgent ? 'urgent' : (isSameDistrict ? 'same_district' : 'today'),
         address: hr.location || elderAddr || 'Colombo',
+        district: taskDistrict,
+        isSameDistrict,
         date: isFlexible ? 'Flexible (Open)' : (hr.date || todayStr),
         rawDate: hr.date || todayStr,
         time: hr.time || '10:00 AM',
@@ -574,10 +636,16 @@ exports.getAvailableRequests = async (req, res) => {
       };
     });
 
-    // Combine all active elder requests and sort newest on top
+    // Combine all active elder requests and sort same-district first, then newest
     let allFormatted = [...formattedComp, ...formattedHelp].sort((a, b) => {
+      if (a.isSameDistrict && !b.isSameDistrict) return -1;
+      if (!a.isSameDistrict && b.isSameDistrict) return 1;
       return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
     });
+
+    if (sameDistrictOnly === 'true' && volunteerDistrict) {
+      allFormatted = allFormatted.filter((item) => item.isSameDistrict);
+    }
 
     if (search && search.trim()) {
       const q = search.trim().toLowerCase();
@@ -585,6 +653,7 @@ exports.getAvailableRequests = async (req, res) => {
         (item) =>
           (item.elderName && item.elderName.toLowerCase().includes(q)) ||
           (item.address && item.address.toLowerCase().includes(q)) ||
+          (item.district && item.district.toLowerCase().includes(q)) ||
           (item.serviceType && item.serviceType.toLowerCase().includes(q)) ||
           (item.type && item.type.toLowerCase().includes(q)) ||
           (item.notes && item.notes.toLowerCase().includes(q))
@@ -594,6 +663,7 @@ exports.getAvailableRequests = async (req, res) => {
     res.status(200).json({
       success: true,
       count: allFormatted.length,
+      volunteerDistrict: volunteerDistrict || 'Colombo',
       data: allFormatted,
     });
   } catch (error) {
@@ -635,6 +705,9 @@ exports.acceptRequest = async (req, res) => {
         if (!compReq.scheduledDate || compReq.scheduledDate < todayStart) {
           compReq.scheduledDate = new Date();
         }
+        if (req.body?.arrivalTime && req.body.arrivalTime.trim()) {
+          compReq.timeSlot = req.body.arrivalTime.trim();
+        }
 
         await compReq.save();
 
@@ -672,6 +745,9 @@ exports.acceptRequest = async (req, res) => {
     request.status = 'confirmed';
     if (!request.date || request.date < todayStr) {
       request.date = todayStr;
+    }
+    if (req.body?.arrivalTime && req.body.arrivalTime.trim()) {
+      request.time = req.body.arrivalTime.trim();
     }
 
     // Check if volunteer has an active offer for this service/date, and decrement slots
@@ -794,8 +870,9 @@ exports.getMySchedule = async (req, res) => {
         schedule.push({
           id: item._id.toString(),
           _id: item._id.toString(),
+          requestId: item._id.toString(),
           serviceType: item.activityType || 'Companionship Visit',
-          elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim(),
+          elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Senior Member',
           elderPhone: elder.phone || '',
           date: item.scheduledDate ? new Date(item.scheduledDate).toISOString().split('T')[0] : 'Today',
           time: item.timeSlot || item.startTime || '02:00 PM',
@@ -1069,18 +1146,60 @@ exports.getMyHistory = async (req, res) => {
       .populate('elderly', 'firstName lastName phone address')
       .sort({ scheduledDate: -1, updatedAt: -1 });
 
+    // Find any real reviews created for these completed requests
+    const allRequestIds = [
+      ...completedHelp.map((h) => h._id),
+      ...completedComp.map((c) => c._id),
+    ];
+
+    const Review = require('../models/Review');
+    const associatedReviews = await Review.find({
+      $or: [
+        { scheduleId: { $in: allRequestIds } },
+        { 'visitDetails.requestId': { $in: allRequestIds } },
+      ],
+    }).lean();
+
+    const reviewMap = new Map();
+    associatedReviews.forEach((rev) => {
+      const key = (rev.scheduleId || rev.visitDetails?.requestId)?.toString();
+      if (key) {
+        reviewMap.set(key, rev);
+      }
+    });
+
     const history = [];
 
     completedHelp.forEach((item) => {
       const elder = item.elderlyId || {};
+      const rev = reviewMap.get(item._id.toString());
+
+      // Only mark as rated if elder really submitted a rating
+      const hasRealRating = Boolean(
+        (rev && rev.rating) ||
+        (item.rating !== null && item.rating !== undefined && Number(item.rating) > 0)
+      );
+
+      const effectiveRating = hasRealRating
+        ? (rev?.rating || item.rating)
+        : null;
+
+      const rawFeedback = (rev?.comment || rev?.visitReview || item.feedback || '').trim();
+      const effectiveFeedback = (hasRealRating && rawFeedback &&
+        rawFeedback !== 'Very punctual and polite! Thank you for the quick help.' &&
+        rawFeedback !== 'Wonderful conversation and company!')
+          ? rawFeedback
+          : null;
+
       history.push({
         id: item._id.toString(),
         _id: item._id.toString(),
         date: item.completedAt ? new Date(item.completedAt).toISOString().split('T')[0] : (item.date || 'Recent'),
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Senior Resident',
         service: item.serviceType || 'Elderly Help',
-        rating: item.rating || 5,
-        feedback: item.feedback || 'Very punctual and polite! Thank you for the quick help.',
+        hasRated: hasRealRating,
+        rating: effectiveRating,
+        feedback: effectiveFeedback,
         duration: '1.5 hrs',
         location: item.location || 'Colombo',
       });
@@ -1088,9 +1207,30 @@ exports.getMyHistory = async (req, res) => {
 
     completedComp.forEach((item) => {
       const elder = item.elderly || {};
+      const rev = reviewMap.get(item._id.toString());
       const dateStr = item.scheduledDate
         ? new Date(item.scheduledDate).toISOString().split('T')[0]
         : (item.updatedAt ? new Date(item.updatedAt).toISOString().split('T')[0] : 'Recent');
+
+      // Only mark as rated if elder really submitted a rating
+      const hasRealRating = Boolean(
+        (rev && rev.rating) ||
+        (item.ratedAt && (item.rating || item.volunteerRating || item.visitRating)) ||
+        (item.volunteerRating !== null && item.volunteerRating !== undefined && Number(item.volunteerRating) > 0) ||
+        (item.visitRating !== null && item.visitRating !== undefined && Number(item.visitRating) > 0) ||
+        (item.rating !== null && item.rating !== undefined && Number(item.rating) > 0)
+      );
+
+      const effectiveRating = hasRealRating
+        ? (rev?.rating || item.volunteerRating || item.visitRating || item.rating)
+        : null;
+
+      const rawFeedback = (rev?.comment || rev?.visitReview || item.volunteerReview || item.visitReview || item.feedback || '').trim();
+      const effectiveFeedback = (hasRealRating && rawFeedback &&
+        rawFeedback !== 'Very punctual and polite! Thank you for the quick help.' &&
+        rawFeedback !== 'Wonderful conversation and company!')
+          ? rawFeedback
+          : null;
 
       history.push({
         id: item._id.toString(),
@@ -1098,8 +1238,9 @@ exports.getMyHistory = async (req, res) => {
         date: dateStr,
         elderName: `${elder.firstName || 'Elder'} ${elder.lastName || ''}`.trim() || 'Senior Member',
         service: item.activityType || 'Companionship',
-        rating: item.rating || item.volunteerRating || item.visitRating || 5,
-        feedback: item.feedback || item.volunteerReview || item.visitReview || 'Wonderful conversation and company!',
+        hasRated: hasRealRating,
+        rating: effectiveRating,
+        feedback: effectiveFeedback,
         duration: item.timeSlot || '2.0 hrs',
         location: item.location || 'Colombo',
       });
@@ -1164,13 +1305,15 @@ exports.addHistoryLog = async (req, res) => {
 
     const scheduledDateObj = date ? new Date(date) : new Date();
     const durationNum = parseFloat(durationHours) || 2.0;
-    const finalRating = parseInt(rating, 10) || 5;
+    const finalRating = (rating !== undefined && rating !== null && !isNaN(parseInt(rating, 10)) && parseInt(rating, 10) > 0)
+      ? parseInt(rating, 10)
+      : null;
     const finalElderName = elderName && elderName.trim()
       ? elderName.trim()
       : (elderUser ? `${elderUser.firstName || 'Senior'} ${elderUser.lastName || ''}`.trim() : 'Senior Resident');
     const finalFeedback = feedback && feedback.trim()
       ? feedback.trim()
-      : 'Thank you so much for the dedicated help and companionship!';
+      : '';
 
     const companionship = await CompanionshipRequest.create({
       elderly: elderUser ? elderUser._id : req.user._id,
@@ -1190,15 +1333,20 @@ exports.addHistoryLog = async (req, res) => {
       visitReview: finalFeedback,
       volunteerRating: finalRating,
       volunteerReview: finalFeedback,
+      ratedAt: finalRating ? new Date() : null,
     });
 
-    if (elderUser) {
+    if (elderUser && finalRating) {
       try {
         await Review.create({
           reviewer: elderUser._id,
           recipient: req.user._id,
           rating: finalRating,
           comment: finalFeedback,
+          scheduleId: companionship._id,
+          scheduleModel: 'CompanionshipRequest',
+          visitRating: finalRating,
+          visitReview: finalFeedback,
           visitDetails: {
             requestId: companionship._id,
             activityType: serviceType.trim(),
@@ -1220,8 +1368,9 @@ exports.addHistoryLog = async (req, res) => {
         date: scheduledDateObj.toISOString().split('T')[0],
         elderName: finalElderName,
         service: serviceType.trim(),
+        hasRated: Boolean(finalRating),
         rating: finalRating,
-        feedback: finalFeedback,
+        feedback: finalFeedback || null,
         duration: time || `${durationNum} hrs`,
         location: location || 'Colombo, Sri Lanka',
       },
@@ -1263,11 +1412,14 @@ exports.getMyStats = async (req, res) => {
     const currentYear = now.getFullYear();
 
     const thisMonthVisits = allCompleted.filter((v) => {
-      const d = v.completedAt ? new Date(v.completedAt) : (v.updatedAt ? new Date(v.updatedAt) : new Date());
+      const d = v.completedAt
+        ? new Date(v.completedAt)
+        : (v.scheduledDate ? new Date(v.scheduledDate) : (v.updatedAt ? new Date(v.updatedAt) : new Date()));
       return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
-    const hoursThisMonth = (thisMonthVisits.length * 1.5).toFixed(1);
+    const hoursCalc = thisMonthVisits.length > 0 ? (thisMonthVisits.length * 1.5).toFixed(1) : (allCompleted.length * 1.5).toFixed(1);
+    const hoursThisMonth = parseFloat(hoursCalc) || (allCompleted.length > 0 ? allCompleted.length * 1.5 : 0);
 
     // Unique elders helped
     const distinctElders = new Set(
@@ -1275,9 +1427,9 @@ exports.getMyStats = async (req, res) => {
         .map((v) => (v.elderlyId?._id || v.elderlyId || v.elderly?._id || v.elderly)?.toString())
         .filter(Boolean)
     );
-    const peopleHelped = distinctElders.size;
+    const peopleHelped = distinctElders.size > 0 ? distinctElders.size : allCompleted.length;
 
-    // Fetch actual database reviews
+    // Fetch actual database reviews submitted by elders
     const dbReviews = await Review.find({ recipient: req.user._id });
     let avgRating = 0;
     if (dbReviews.length > 0) {
