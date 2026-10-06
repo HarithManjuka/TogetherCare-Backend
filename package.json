@@ -9,7 +9,8 @@
     "test:it23831254": "jest tests/IT23831254 --runInBand --detectOpenHandles --forceExit",
     "test:it23819092": "jest tests/IT23819092 --runInBand --detectOpenHandles --forceExit",
     "test:it23818620": "jest tests/IT23818620 --runInBand --detectOpenHandles --forceExit",
-    "test:it23839106": "jest tests/IT23839106 --runInBand --detectOpenHandles --forceExit"
+    "test:it23839106": "jest tests/IT23839106 --runInBand --detectOpenHandles --forceExit",
+    "test:regression": "jest tests/regression --runInBand --detectOpenHandles --forceExit"
   },
   "jest": {
     "testEnvironment": "node",
