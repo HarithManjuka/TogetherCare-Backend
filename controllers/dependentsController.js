@@ -1,4 +1,5 @@
 // controllers/dependentsController.js
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
 const HelpRequest = require('../models/HelpRequest');
@@ -51,10 +52,32 @@ exports.addDependent = async (req, res) => {
       emergencyContact,
     } = req.body;
 
-    if (!firstName || !lastName || !phone || !dateOfBirth || !address) {
+    const trimmedFirstName = (firstName || '').trim();
+    const trimmedLastName = (lastName || '').trim();
+    const trimmedPhone = (phone || '').trim();
+
+    if (!trimmedFirstName || !trimmedLastName || !trimmedPhone || !dateOfBirth || !address) {
       return res.status(400).json({
         success: false,
         message: 'Please provide all required fields (First name, Last name, DOB, Phone, Address)',
+      });
+    }
+
+    // Validate Sri Lankan phone format
+    const sriLankaPhoneRegex = /^(?:0|94|\+94)?(7[0-9]{8})$/;
+    if (!sriLankaPhoneRegex.test(trimmedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid Sri Lankan mobile number (e.g. 07XXXXXXXX or +947XXXXXXXX)',
+      });
+    }
+
+    // Validate Date of Birth
+    const dobDate = new Date(dateOfBirth);
+    if (isNaN(dobDate.getTime()) || dobDate >= new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid past date of birth',
       });
     }
 
@@ -150,6 +173,20 @@ exports.requestLink = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Please provide an elderly profile ID to link',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(elderlyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid elderly profile ID format',
+      });
+    }
+
+    if (elderlyId.toString() === req.user._id.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot link your own account as a dependent',
       });
     }
 
@@ -254,6 +291,27 @@ exports.respondLink = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Please provide caregiverId and action (accept or reject)',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(caregiverId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid caregiver profile ID format',
+      });
+    }
+
+    if (seniorId && !mongoose.Types.ObjectId.isValid(seniorId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid senior profile ID format',
+      });
+    }
+
+    if (req.user.role === 'elderly' && req.user._id.toString() !== seniorId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only respond to link requests sent to your own account',
       });
     }
 
@@ -466,12 +524,32 @@ exports.unlinkDependent = async (req, res) => {
       });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(elderlyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid elderly profile ID format',
+      });
+    }
+
     const elderly = await User.findById(elderlyId);
     if (!elderly) {
       return res.status(404).json({
         success: false,
         message: 'Elderly profile not found',
       });
+    }
+
+    // Authorization: if caregiver, must be linked to this specific elderly person
+    if (req.user.role === 'caregiver') {
+      const isMyDependent =
+        (elderly.linkedCaregiverId && elderly.linkedCaregiverId.toString() === req.user._id.toString()) ||
+        (req.user.linkedElderlyProfiles && req.user.linkedElderlyProfiles.some((id) => id.toString() === elderlyId.toString()));
+      if (!isMyDependent) {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not authorized to unlink this dependent',
+        });
+      }
     }
 
     const actualCaregiverId = caregiverId || elderly.linkedCaregiverId;
@@ -506,6 +584,13 @@ exports.unlinkDependent = async (req, res) => {
 exports.getDependentActivities = async (req, res) => {
   try {
     const elderlyId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(elderlyId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid elderly profile ID format',
+      });
+    }
 
     // Verify access
     const caregiver = await User.findById(req.user._id);

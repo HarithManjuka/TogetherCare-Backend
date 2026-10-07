@@ -1,4 +1,5 @@
 // controllers/helpRequestController.js
+const mongoose = require('mongoose');
 const HelpRequest = require('../models/HelpRequest');
 const VolunteerOffer = require('../models/VolunteerOffer');
 const CompanionshipRequest = require('../models/CompanionshipRequest');
@@ -338,6 +339,15 @@ exports.getRequestDetails = async (req, res) => {
 exports.approveMatch = async (req, res) => {
   try {
     const { volunteerId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid request ID format' });
+    }
+
+    if (volunteerId && !mongoose.Types.ObjectId.isValid(volunteerId)) {
+      return res.status(400).json({ success: false, message: 'Invalid volunteer ID format' });
+    }
+
     const request = await HelpRequest.findById(req.params.id);
 
     if (!request) {
@@ -649,6 +659,19 @@ exports.startTrip = async (req, res) => {
 exports.updateLocation = async (req, res) => {
   try {
     const { lat, lng, address } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid request ID format' });
+    }
+
+    if (lat !== undefined && (typeof lat !== 'number' || isNaN(lat) || lat < -90 || lat > 90)) {
+      return res.status(400).json({ success: false, message: 'Latitude must be a valid number between -90 and 90' });
+    }
+
+    if (lng !== undefined && (typeof lng !== 'number' || isNaN(lng) || lng < -180 || lng > 180)) {
+      return res.status(400).json({ success: false, message: 'Longitude must be a valid number between -180 and 180' });
+    }
+
     const request = await HelpRequest.findById(req.params.id);
 
     if (!request) {
@@ -908,6 +931,10 @@ exports.acceptCaregiverAssignment = async (req, res) => {
     const assignmentId = req.params.id;
     const { assignmentType } = req.body; // 'help_request' or 'companionship'
     const caregiverId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return res.status(400).json({ success: false, message: 'Invalid assignment ID format' });
+    }
 
     let targetDate = '';
     let targetTime = '';
