@@ -1,4 +1,5 @@
 // controllers/messageController.js
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const User = require('../models/User');
 const { createNotification } = require('./notificationController');
@@ -95,6 +96,13 @@ const getMessages = async (req, res) => {
     const userId = req.user._id;
     const { otherUserId } = req.params;
 
+    if (!mongoose.Types.ObjectId.isValid(otherUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID format',
+      });
+    }
+
     const messages = await Message.find({
       $or: [
         { sender: userId, recipient: otherUserId },
@@ -180,6 +188,34 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Recipient ID is required',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(recipientId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid recipient ID format',
+      });
+    }
+
+    if (recipientId.toString() === senderId.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot send a message to yourself',
+      });
+    }
+
+    if (relatedSeniorId && !mongoose.Types.ObjectId.isValid(relatedSeniorId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid related senior ID format',
+      });
+    }
+
+    if (messageText.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message text cannot exceed 2000 characters',
       });
     }
 
@@ -277,6 +313,13 @@ const markThreadRead = async (req, res) => {
   try {
     const userId = req.user._id;
     const { otherUserId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(otherUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID format',
+      });
+    }
 
     await Message.updateMany(
       { sender: otherUserId, recipient: userId, isRead: false },
@@ -396,6 +439,20 @@ const searchContactByPhone = async (req, res) => {
 const addContact = async (req, res) => {
   try {
     const { phone, contactUserId, nickname } = req.body;
+
+    if (contactUserId && !mongoose.Types.ObjectId.isValid(contactUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid contact user ID format',
+      });
+    }
+
+    if (nickname && nickname.trim().length > 50) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nickname cannot exceed 50 characters',
+      });
+    }
 
     let targetUser = null;
 
@@ -589,6 +646,14 @@ const getContacts = async (req, res) => {
 const removeContact = async (req, res) => {
   try {
     const { contactUserId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(contactUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid contact user ID format',
+      });
+    }
+
     const currentUser = await User.findById(req.user._id);
 
     if (!currentUser.contacts) {

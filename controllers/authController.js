@@ -1,4 +1,5 @@
 // controllers/authController.js
+const mongoose = require('mongoose');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
@@ -676,11 +677,39 @@ const addCaregiverCertification = async (req, res) => {
   try {
     const { title, issuingOrganization, issueDate, expiryDate, certificateNumber } = req.body;
 
-    if (!title || !issuingOrganization) {
+    const trimmedTitle = (title || '').trim();
+    const trimmedOrg = (issuingOrganization || '').trim();
+
+    if (!trimmedTitle || !trimmedOrg) {
       return res.status(400).json({
         success: false,
         message: 'Certificate title and issuing organization are required',
       });
+    }
+
+    if (trimmedTitle.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Certificate title cannot exceed 100 characters',
+      });
+    }
+
+    if (trimmedOrg.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Issuing organization cannot exceed 100 characters',
+      });
+    }
+
+    if (issueDate && expiryDate) {
+      const iDate = new Date(issueDate);
+      const eDate = new Date(expiryDate);
+      if (!isNaN(iDate.getTime()) && !isNaN(eDate.getTime()) && iDate > eDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Certificate issue date cannot be later than expiry date',
+        });
+      }
     }
 
     const user = await User.findById(req.user._id);
@@ -721,6 +750,14 @@ const addCaregiverCertification = async (req, res) => {
 const deleteCaregiverCertification = async (req, res) => {
   try {
     const certId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(certId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid certification ID format',
+      });
+    }
+
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
