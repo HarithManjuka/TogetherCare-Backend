@@ -16,9 +16,14 @@ const {
   verifyProfileEmail,
   updateUserVerificationStatus,
   deleteUserAccount,
+  addCaregiverCertification,
+  deleteCaregiverCertification,
+  submitVolunteerVerification,
+  downloadVolunteerEvidence,
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { handleUpload } = require('../middleware/uploadMiddleware');
+const { handleEvidenceUpload } = require('../middleware/evidenceUploadMiddleware');
 
 // Public auth routes
 router.post('/register', registerUser);
@@ -30,6 +35,21 @@ router.get('/users', protect, authorize('admin'), getAllUsers);
 router.patch('/users/:id/verification', protect, authorize('admin'), updateUserVerificationStatus);
 router.delete('/users/:id', protect, authorize('admin'), deleteUserAccount);
 router.put('/profile', protect, updateUserProfile);
+router.post('/certifications', protect, addCaregiverCertification);
+router.delete('/certifications/:id', protect, deleteCaregiverCertification);
+
+// Volunteer verification routes
+router.post(
+  '/volunteer-verification',
+  protect,
+  handleEvidenceUpload,
+  submitVolunteerVerification
+);
+router.get(
+  '/volunteer-verification/:userId/download/:fileIndex',
+  protect,
+  downloadVolunteerEvidence
+);
 
 // Email Verification Flow
 router.post('/send-email-verification-otp', protect, sendEmailVerificationOtp);

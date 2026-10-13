@@ -66,7 +66,7 @@ const CompanionshipRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'accepted', 'completed', 'cancelled'],
+      enum: ['pending', 'accepted', 'scheduled', 'ongoing', 'arrived', 'completed', 'cancelled', 'expired', 'outdated'],
       default: 'pending',
     },
     location: {
@@ -78,6 +78,46 @@ const CompanionshipRequestSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: '',
+    },
+    // Rating for the visit itself
+    visitRating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: null,
+    },
+    visitReview: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    // Rating for the volunteer companion
+    volunteerRating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: null,
+    },
+    volunteerReview: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    // Alias fields for backward compatibility
+    rating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: null,
+    },
+    feedback: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    ratedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

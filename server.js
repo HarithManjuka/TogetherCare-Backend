@@ -43,8 +43,12 @@ app.use('/api/interests', require('./routes/interestRoutes'));
 app.use('/api/activities', require('./routes/activityRoutes'));
 app.use('/api/volunteer-offers', require('./routes/volunteerOfferRoutes'));
 app.use('/api/caregiver/dependents', require('./routes/dependentsRoutes'));
+app.use('/api/dependents', require('./routes/dependentsRoutes'));
 app.use('/api/help-requests', require('./routes/helpRequestRoutes'));
 app.use('/api/admin/users', require('./routes/adminUserRoutes'));
+app.use('/api/emergency', require('./routes/emergencyRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
+app.use('/api/messages', require('./routes/messageRoutes'));
 
 // Health Check Route
 app.get('/api/health', (req, res) => {
@@ -58,9 +62,15 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 5001;
 
-// Only execute app.listen if NOT in a test environment and NOT in a serverless environment (Vercel sets process.env.VERCEL)
+// Attach HTTP Server & Socket.io
+const http = require('http');
+const { initSocket } = require('./socket');
+const server = http.createServer(app);
+initSocket(server);
+
+// Only execute server.listen if NOT in a test environment and NOT in a serverless environment (Vercel sets process.env.VERCEL)
 if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
-  const server = app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 TogetherCare Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
   });
 
@@ -120,4 +130,4 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
   });
 }
 
-module.exports = app;
+module.exports = app;

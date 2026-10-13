@@ -29,13 +29,33 @@ const ReviewSchema = new mongoose.Schema(
       trim: true,
       default: 'companionship',
     },
+    scheduleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      refPath: 'scheduleModel',
+    },
+    scheduleModel: {
+      type: String,
+      enum: ['CompanionshipRequest', 'HelpRequest'],
+      default: 'CompanionshipRequest',
+    },
+    visitRating: {
+      type: Number,
+      min: 1,
+      max: 5,
+    },
+    visitReview: {
+      type: String,
+      trim: true,
+      default: '',
+    },
   },
   {
     timestamps: true,
   }
 );
 
-// Compound index to quickly fetch reviews for a recipient
+// Compound index to quickly fetch reviews for a recipient and ensure schedule uniqueness
 ReviewSchema.index({ recipient: 1, createdAt: -1 });
+ReviewSchema.index({ scheduleId: 1, reviewer: 1 });
 
 module.exports = mongoose.model('Review', ReviewSchema);

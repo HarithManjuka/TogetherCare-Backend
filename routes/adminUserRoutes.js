@@ -9,6 +9,7 @@ const {
   updateAdminUserDetails,
   banUser,
   unbanUser,
+  reviewVolunteerVerification,
 } = require('../controllers/adminUserController');
 
 // Protect all admin user routes
@@ -25,5 +26,9 @@ router.route('/:id')
 
 router.post('/:id/ban', banUser);
 router.post('/:id/unban', unbanUser);
+
+// Review volunteer verification route
+router.put('/:id/verify-volunteer', reviewVolunteerVerification);
+router.put('/users/:id/verify-volunteer', reviewVolunteerVerification);
 
 module.exports = router;

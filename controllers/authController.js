@@ -1,4 +1,5 @@
 // controllers/authController.js
+const mongoose = require('mongoose');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
@@ -9,6 +10,7 @@ const {
   uploadUserProfilePicture,
   deleteUserProfilePicture,
 } = require('../services/cloudinaryService');
+const cloudinary = require('../config/cloudinary');
 
 const generateToken = (id, role, customId) => {
   return jwt.sign({ id, role, customId }, process.env.JWT_SECRET, {
@@ -314,7 +316,9 @@ const loginUser = async (req, res) => {
 // @access  Private
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id)
+      .populate('linkedCaregiverId', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId')
+      .populate('pendingCaregiverRequests.caregiver', 'firstName lastName phone email profilePicture relationshipToElderly caregiverType customId');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -504,6 +508,12 @@ const updateUserProfile = async (req, res) => {
       volunteerIdType,
       volunteerIdNumber,
       educationalInstitution,
+      qualifications,
+      yearsOfExperience,
+      specializations,
+      caregiverBio,
+      hourlyRate,
+      availableDays,
     } = req.body;
 
     if (firstName !== undefined) {
@@ -624,6 +634,26 @@ const updateUserProfile = async (req, res) => {
       user.educationalInstitution = String(educationalInstitution).trim();
     }
 
+    // Caregiver professional profile attributes
+    if (qualifications !== undefined && Array.isArray(qualifications)) {
+      user.qualifications = qualifications.map((q) => String(q).trim()).filter(Boolean);
+    }
+    if (yearsOfExperience !== undefined) {
+      user.yearsOfExperience = Math.max(0, Number(yearsOfExperience) || 0);
+    }
+    if (specializations !== undefined && Array.isArray(specializations)) {
+      user.specializations = specializations.map((s) => String(s).trim()).filter(Boolean);
+    }
+    if (caregiverBio !== undefined) {
+      user.caregiverBio = String(caregiverBio).trim();
+    }
+    if (hourlyRate !== undefined) {
+      user.hourlyRate = Math.max(0, Number(hourlyRate) || 0);
+    }
+    if (availableDays !== undefined && Array.isArray(availableDays)) {
+      user.availableDays = availableDays.map((d) => String(d).trim()).filter(Boolean);
+    }
+
     await user.save();
 
     return res.status(200).json({
@@ -636,6 +666,118 @@ const updateUserProfile = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error updating profile',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Add a professional certification to caregiver profile (Sprint 1)
+// @route   POST /api/auth/certifications
+// @access  Private (Caregiver)
+const addCaregiverCertification = async (req, res) => {
+  try {
+    const { title, issuingOrganization, issueDate, expiryDate, certificateNumber } = req.body;
+
+    const trimmedTitle = (title || '').trim();
+    const trimmedOrg = (issuingOrganization || '').trim();
+
+    if (!trimmedTitle || !trimmedOrg) {
+      return res.status(400).json({
+        success: false,
+        message: 'Certificate title and issuing organization are required',
+      });
+    }
+
+    if (trimmedTitle.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Certificate title cannot exceed 100 characters',
+      });
+    }
+
+    if (trimmedOrg.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Issuing organization cannot exceed 100 characters',
+      });
+    }
+
+    if (issueDate && expiryDate) {
+      const iDate = new Date(issueDate);
+      const eDate = new Date(expiryDate);
+      if (!isNaN(iDate.getTime()) && !isNaN(eDate.getTime()) && iDate > eDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Certificate issue date cannot be later than expiry date',
+        });
+      }
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications.push({
+      title: title.trim(),
+      issuingOrganization: issuingOrganization.trim(),
+      issueDate: issueDate ? new Date(issueDate) : null,
+      expiryDate: expiryDate ? new Date(expiryDate) : null,
+      certificateNumber: certificateNumber ? certificateNumber.trim() : '',
+      verificationStatus: 'pending',
+    });
+
+    await user.save();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Certification added successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Add Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error adding certification',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Delete a professional certification from caregiver profile
+// @route   DELETE /api/auth/certifications/:id
+// @access  Private (Caregiver)
+const deleteCaregiverCertification = async (req, res) => {
+  try {
+    const certId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(certId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid certification ID format',
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.certifications = user.certifications.filter((c) => c._id.toString() !== certId);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Certification removed successfully',
+      data: user.certifications,
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Delete Certification Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error deleting certification',
       error: error.message,
     });
   }
@@ -792,7 +934,7 @@ const getAllUsers = async (req, res) => {
     await fixDuplicateUserIds();
 
     const users = await User.find()
-      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName')
+      .select('firstName lastName customId email role phone gender address verificationBadgeStatus isEmailVerified accountStatus profilePicture caregiverType age dateOfBirth emergencyContact volunteerIdType volunteerIdNumber educationalInstitution relationshipToElderly organizationName createdAt')
       .lean();
 
     return res.status(200).json({
@@ -883,24 +1025,24 @@ const verifyProfileEmail = async (req, res) => {
 
     user.isEmailVerified = true;
     user.accountStatus = 'active';
+    // For volunteers, verificationBadgeStatus tracks ID document approval,
+    // which requires evidence upload and admin review.
+    // Email OTP verification must not mark volunteer ID verification badge as 'verified'.
+    if (user.role !== 'volunteer') {
+      user.verificationBadgeStatus = 'verified';
+    }
     user.emailVerificationOtpHash = undefined;
     user.emailVerificationOtpExpires = undefined;
     await user.save();
 
+    const successMessage = user.role === 'volunteer'
+      ? 'Email address successfully verified! You can now submit your ID evidence to get verified.'
+      : 'Email address successfully verified! Your verified badge is now active.';
+
     return res.status(200).json({
       success: true,
-      message: 'Email address successfully verified!',
-      user: {
-        _id: user._id,
-        customId: user.customId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-        accountStatus: user.accountStatus,
-        verificationBadgeStatus: user.verificationBadgeStatus,
-      },
+      message: successMessage,
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error('Verify Profile Email Error:', error);
@@ -956,6 +1098,172 @@ const deleteUserAccount = async (req, res) => {
   }
 };
 
+// @desc    Submit Volunteer Verification Evidence
+// @route   POST /api/auth/volunteer-verification
+// @access  Private (Volunteer only)
+const submitVolunteerVerification = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ status: 'fail', message: 'User not found' });
+    }
+
+    if (user.role !== 'volunteer') {
+      return res.status(403).json({ status: 'fail', message: 'Only volunteers can submit verification evidence.' });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ status: 'fail', message: 'Please attach at least one piece of evidence (PDF or picture).' });
+    }
+
+    const { credentialType, credentialNumber, categories } = req.body;
+    let parsedCategories = [];
+    try {
+      parsedCategories = categories ? (typeof categories === 'string' ? JSON.parse(categories) : categories) : [];
+    } catch {
+      parsedCategories = [];
+    }
+
+    // Map uploaded files from Cloudinary
+    const uploadedEvidence = req.files.map((file, index) => {
+      const isPdf =
+        file.mimetype === 'application/pdf' ||
+        (file.originalname && file.originalname.toLowerCase().endsWith('.pdf'));
+      return {
+        url: file.path || file.secure_url,
+        publicId: file.filename,
+        fileType: isPdf ? 'pdf' : 'image',
+        documentCategory: parsedCategories[index] || (isPdf ? 'document_pdf' : 'general_evidence'),
+        originalName: file.originalname,
+        fileSize: file.size,
+        uploadedAt: new Date(),
+      };
+    });
+
+    user.volunteerVerification = {
+      status: 'PENDING',
+      credentialType: credentialType || user.volunteerVerification?.credentialType || 'None',
+      credentialNumber: credentialNumber || user.volunteerVerification?.credentialNumber || '',
+      evidenceFiles: uploadedEvidence,
+      rejectionReason: '',
+      submittedAt: new Date(),
+    };
+
+    // Keep legacy flag and badge status in sync
+    user.isVolunteerVerified = false;
+    user.verificationBadgeStatus = 'pending';
+    if (credentialType && ['NIC', 'Student ID', 'Passport'].includes(credentialType)) {
+      user.volunteerIdType = credentialType;
+    }
+    if (credentialNumber) {
+      user.volunteerIdNumber = credentialNumber;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Evidence submitted successfully. Your verification status is now PENDING review.',
+      data: {
+        volunteerVerification: user.volunteerVerification,
+      },
+    });
+  } catch (error) {
+    console.error('Error in submitVolunteerVerification:', error);
+    res.status(500).json({ status: 'error', message: error.message || 'Server Error' });
+  }
+};
+
+// @desc    Securely download volunteer verification evidence (PDF or images)
+// @route   GET /api/auth/volunteer-verification/:userId/download/:fileIndex
+// @access  Private (Admin or Owner Volunteer)
+const downloadVolunteerEvidence = async (req, res) => {
+  try {
+    const { userId, fileIndex } = req.params;
+    const isOwner = req.user._id.toString() === userId;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ status: 'fail', message: 'Not authorized to download this document.' });
+    }
+
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
+      return res.status(404).json({ status: 'fail', message: 'User not found.' });
+    }
+
+    const evidenceList = targetUser.volunteerVerification?.evidenceFiles || [];
+    const index = parseInt(fileIndex, 10);
+    const file = evidenceList[index];
+
+    if (!file) {
+      return res.status(404).json({ status: 'fail', message: 'Evidence file not found.' });
+    }
+
+    const isPdf =
+      file.fileType === 'pdf' ||
+      (file.originalName && file.originalName.toLowerCase().endsWith('.pdf'));
+    const ext = isPdf ? 'pdf' : 'jpg';
+    const targetFileName =
+      file.originalName || `${file.documentCategory || 'evidence'}_${targetUser.customId || 'doc'}.${ext}`;
+
+    // Generate signed download URL from Cloudinary if publicId exists
+    let downloadUrl = file.url;
+    if (file.publicId) {
+      try {
+        downloadUrl = cloudinary.utils.private_download_url(file.publicId, '', {
+          resource_type: isPdf ? 'raw' : 'image',
+          type: 'upload',
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        });
+      } catch (err) {
+        console.warn('Error generating Cloudinary signed download URL:', err.message);
+        downloadUrl = file.url;
+      }
+    }
+
+    const https = require('https');
+    const http = require('http');
+    const clientHttp = downloadUrl.startsWith('https') ? https : http;
+
+    clientHttp
+      .get(downloadUrl, (remoteRes) => {
+        if (remoteRes.statusCode >= 400) {
+          return res.status(remoteRes.statusCode).json({
+            status: 'fail',
+            message: 'Failed to retrieve evidence file from storage provider.',
+          });
+        }
+
+        res.setHeader(
+          'Content-Type',
+          isPdf ? 'application/pdf' : remoteRes.headers['content-type'] || 'image/jpeg'
+        );
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${encodeURIComponent(targetFileName)}"`
+        );
+        if (remoteRes.headers['content-length']) {
+          res.setHeader('Content-Length', remoteRes.headers['content-length']);
+        }
+
+        remoteRes.pipe(res);
+      })
+      .on('error', (err) => {
+        console.error('Download stream error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ status: 'error', message: 'Could not stream document.' });
+        }
+      });
+  } catch (error) {
+    console.error('Error in downloadVolunteerEvidence:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ status: 'error', message: error.message || 'Server error' });
+    }
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -971,4 +1279,8 @@ module.exports = {
   verifyProfileEmail,
   updateUserVerificationStatus,
   deleteUserAccount,
+  addCaregiverCertification,
+  deleteCaregiverCertification,
+  submitVolunteerVerification,
+  downloadVolunteerEvidence,
 };
