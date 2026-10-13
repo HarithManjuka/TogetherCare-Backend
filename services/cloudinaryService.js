@@ -62,6 +62,58 @@ const uploadUserProfilePicture = async ({ buffer, base64Data }) => {
   throw new Error('No image buffer or base64 data provided');
 };
 
+const VOICE_NOTES_FOLDER = 'togethercare/voice_notes';
+
+/**
+ * Upload voice note audio buffer to Cloudinary under 'togethercare/voice_notes'
+ * @param {Buffer} buffer - Audio buffer from Multer
+ * @returns {Promise<Object>} Cloudinary upload result object
+ */
+const uploadAudioBufferToCloudinary = (buffer) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: VOICE_NOTES_FOLDER,
+        resource_type: 'video', // Cloudinary handles audio files under 'video'
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+
+    Readable.from(buffer).pipe(uploadStream);
+  });
+};
+
+/**
+ * Upload base64 audio data string to Cloudinary under 'togethercare/voice_notes'
+ * @param {string} base64Data - Base64 Data URI or raw base64 string
+ * @returns {Promise<Object>} Cloudinary upload result object
+ */
+const uploadAudioBase64ToCloudinary = async (base64Data) => {
+  return await cloudinary.uploader.upload(base64Data, {
+    folder: VOICE_NOTES_FOLDER,
+    resource_type: 'video',
+  });
+};
+
+/**
+ * Main service method to upload voice note (Buffer or Base64)
+ * @param {Object} params
+ * @param {Buffer} [params.buffer]
+ * @param {string} [params.base64Data]
+ * @returns {Promise<Object>} Cloudinary upload result
+ */
+const uploadVoiceNote = async ({ buffer, base64Data }) => {
+  if (buffer) {
+    return await uploadAudioBufferToCloudinary(buffer);
+  } else if (base64Data) {
+    return await uploadAudioBase64ToCloudinary(base64Data);
+  }
+  throw new Error('No audio buffer or base64 data provided');
+};
+
 /**
  * Delete user profile picture from Cloudinary by public ID
  * @param {string} publicId - Cloudinary public ID of the image
@@ -79,6 +131,8 @@ const deleteUserProfilePicture = async (publicId) => {
 
 module.exports = {
   USER_PROFILE_FOLDER,
+  VOICE_NOTES_FOLDER,
   uploadUserProfilePicture,
   deleteUserProfilePicture,
+  uploadVoiceNote,
 };

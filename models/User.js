@@ -28,13 +28,13 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, 'First name is required'],
       trim: true,
-      match: [/^[A-Za-z]+$/, 'First name can only contain letters'],
+      match: [/^[A-Za-z\s]+$/, 'First name can only contain letters'],
     },
     lastName: {
       type: String,
       required: [true, 'Last name is required'],
       trim: true,
-      match: [/^[A-Za-z]+$/, 'Last name can only contain letters'],
+      match: [/^[A-Za-z\s]+$/, 'Last name can only contain letters'],
     },
     email: {
       type: String,
@@ -97,7 +97,7 @@ const UserSchema = new mongoose.Schema(
     },
     accountStatus: {
       type: String,
-      enum: ['active', 'pending_verification', 'suspended'],
+      enum: ['active', 'pending_verification', 'suspended', 'deactivated'],
       default: 'pending_verification',
     },
     profilePicture: {
@@ -147,11 +147,39 @@ const UserSchema = new mongoose.Schema(
       relation: { type: String, default: '' },
       phone: { type: String, default: '' },
     },
+    careCircle: [
+      {
+        name: { type: String, required: true, trim: true },
+        relation: { type: String, required: true, trim: true, default: 'Family Member' },
+        phone: { type: String, required: true, trim: true },
+        isPrimary: { type: Boolean, default: false },
+        notes: { type: String, default: '', trim: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     linkedCaregiverId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       default: null,
     },
+    pendingCaregiverRequests: [
+      {
+        caregiver: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        relationship: {
+          type: String,
+          trim: true,
+          default: 'Family Member',
+        },
+        requestedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
 
     // Volunteer specific
     volunteerIdType: {
@@ -166,11 +194,126 @@ const UserSchema = new mongoose.Schema(
       enum: ['unverified', 'pending', 'verified', 'rejected'],
       default: 'unverified',
     },
+    volunteerVerification: {
+      status: {
+        type: String,
+        enum: ['UNVERIFIED', 'PENDING', 'APPROVED', 'REJECTED'],
+        default: 'UNVERIFIED',
+      },
+      credentialType: {
+        type: String,
+        enum: ['NIC', 'Student ID', 'Passport', 'None'],
+        default: 'None',
+      },
+      credentialNumber: {
+        type: String,
+        default: '',
+        trim: true,
+      },
+      evidenceFiles: [
+        {
+          url: { type: String, required: true },
+          publicId: { type: String },
+          fileType: { type: String, enum: ['image', 'pdf'], required: true },
+          documentCategory: {
+            type: String,
+            enum: ['nic_front', 'nic_back', 'student_id_front', 'passport_bio', 'document_pdf', 'general_evidence'],
+            default: 'general_evidence',
+          },
+          originalName: { type: String },
+          fileSize: { type: Number }, // in bytes
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
+      rejectionReason: {
+        type: String,
+        default: '',
+      },
+      submittedAt: {
+        type: Date,
+      },
+      reviewedAt: {
+        type: Date,
+      },
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    },
+    isVolunteerVerified: {
+      type: Boolean,
+      default: false,
+    },
 
     // Caregiver specific
     relationshipToElderly: { type: String, default: '' },
     organizationName: { type: String, default: '' },
     linkedElderlyProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    certifications: [
+      {
+        title: { type: String, required: true, trim: true },
+        issuingOrganization: { type: String, required: true, trim: true },
+        issueDate: { type: Date, default: null },
+        expiryDate: { type: Date, default: null },
+        certificateNumber: { type: String, trim: true, default: '' },
+        verificationStatus: {
+          type: String,
+          enum: ['unverified', 'pending', 'verified', 'rejected'],
+          default: 'unverified',
+        },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    qualifications: [{ type: String, trim: true }],
+    yearsOfExperience: { type: Number, default: 0 },
+    specializations: [{ type: String, trim: true }],
+    caregiverBio: { type: String, trim: true, default: '' },
+    hourlyRate: { type: Number, default: 0 },
+    availableDays: [{ type: String, trim: true }],
+
+    // Ban Management Attributes
+    isBanned: {
+      type: Boolean,
+      default: false,
+    },
+    banType: {
+      type: String,
+      enum: ['none', 'temporary', 'permanent'],
+      default: 'none',
+    },
+    banExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    bannedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    banReason: {
+      type: String,
+      default: '',
+    },
+
+    // Messaging Contacts List
+    contacts: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        nickname: {
+          type: String,
+          trim: true,
+          default: '',
+        },
+        addedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   {
     timestamps: true,

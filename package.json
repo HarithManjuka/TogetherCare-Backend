@@ -9,7 +9,8 @@
     "test:it23831254": "jest tests/IT23831254 --runInBand --detectOpenHandles --forceExit",
     "test:it23819092": "jest tests/IT23819092 --runInBand --detectOpenHandles --forceExit",
     "test:it23818620": "jest tests/IT23818620 --runInBand --detectOpenHandles --forceExit",
-    "test:it23839106": "jest tests/IT23839106 --runInBand --detectOpenHandles --forceExit"
+    "test:it23839106": "jest tests/IT23839106 --runInBand --detectOpenHandles --forceExit",
+    "test:regression": "jest tests/regression --runInBand --detectOpenHandles --forceExit"
   },
   "jest": {
     "testEnvironment": "node",
@@ -21,7 +22,7 @@
   "description": "",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "cloudinary": "^2.10.1",
+    "cloudinary": "^1.41.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -31,7 +32,9 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.3",
     "multer": "^2.2.0",
-    "nodemailer": "^9.0.5"
+    "multer-storage-cloudinary": "^4.0.0",
+    "nodemailer": "^9.0.5",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "jest": "^30.5.1",

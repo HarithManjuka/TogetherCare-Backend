@@ -1,5 +1,4 @@
-# .coderabbit.yaml
-version: "2"
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: "en-US"
 tone_instructions: "Be concise, actionable, and focus on production-grade Node.js/Express, security, and MongoDB best practices."
 reviews:
@@ -13,7 +12,9 @@ reviews:
     enabled: true
     drafts: false
     base_branches:
-      - "dev"
       - "main"
+      - "dev"
+      - "feature/.*"
+      - ".*"
 chat:
   auto_reply: true
