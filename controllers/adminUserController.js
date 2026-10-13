@@ -81,6 +81,16 @@ const getAdminUserDetails = async (req, res) => {
       user.age = calculateAge(user.dateOfBirth);
     }
 
+    // Ensure volunteer ID verification badge integrity
+    if (user.role === 'volunteer') {
+      const isApproved = user.isVolunteerVerified === true || (user.volunteerVerification?.status || '').toUpperCase() === 'APPROVED';
+      if (!isApproved && user.verificationBadgeStatus === 'verified') {
+        const vvStatus = (user.volunteerVerification?.status || '').toUpperCase();
+        user.verificationBadgeStatus = vvStatus === 'PENDING' ? 'pending' : vvStatus === 'REJECTED' ? 'rejected' : 'unverified';
+        await User.findByIdAndUpdate(user._id, { verificationBadgeStatus: user.verificationBadgeStatus });
+      }
+    }
+
     delete user.password;
     delete user.resetPasswordOtpHash;
     delete user.resetPasswordOtpExpires;

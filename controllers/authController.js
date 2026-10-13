@@ -1025,14 +1025,23 @@ const verifyProfileEmail = async (req, res) => {
 
     user.isEmailVerified = true;
     user.accountStatus = 'active';
-    user.verificationBadgeStatus = 'verified';
+    // For volunteers, verificationBadgeStatus tracks ID document approval,
+    // which requires evidence upload and admin review.
+    // Email OTP verification must not mark volunteer ID verification badge as 'verified'.
+    if (user.role !== 'volunteer') {
+      user.verificationBadgeStatus = 'verified';
+    }
     user.emailVerificationOtpHash = undefined;
     user.emailVerificationOtpExpires = undefined;
     await user.save();
 
+    const successMessage = user.role === 'volunteer'
+      ? 'Email address successfully verified! You can now submit your ID evidence to get verified.'
+      : 'Email address successfully verified! Your verified badge is now active.';
+
     return res.status(200).json({
       success: true,
-      message: 'Email address successfully verified! Your verified badge is now active.',
+      message: successMessage,
       user: sanitizeUser(user),
     });
   } catch (error) {

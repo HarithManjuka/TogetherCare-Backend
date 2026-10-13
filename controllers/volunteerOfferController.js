@@ -154,7 +154,7 @@ exports.getAllOffers = async (req, res) => {
 
     // Newest posted offers on top
     const offers = await VolunteerOffer.find(query)
-      .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus isEmailVerified age educationalInstitution bio rating address interests')
+      .populate('volunteerId', 'firstName lastName email phone profilePicture verificationBadgeStatus isVolunteerVerified volunteerVerification volunteerIdType isEmailVerified age educationalInstitution bio rating address interests')
       .sort({ createdAt: -1, date: 1 });
 
     res.status(200).json({
